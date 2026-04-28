@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: UTPublisher
+Source: local
+
+Files: *
+Copyright: 2026 UnionTech
+License: proprietary
+ All rights reserved.

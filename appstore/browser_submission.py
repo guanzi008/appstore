@@ -32,6 +32,12 @@ from appstore.session_state import SessionStateStore
 
 ORIGIN = "https://appstore-dev.uniontech.com"
 INDEX_URL = f"{ORIGIN}/#/index"
+PYPPETEER_LAUNCH_OPTIONS = {
+    "args": ["--no-sandbox"],
+    "handleSIGINT": False,
+    "handleSIGTERM": False,
+    "handleSIGHUP": False,
+}
 
 
 @dataclass(frozen=True)
@@ -242,7 +248,7 @@ class BrowserSubmissionRunner:
         plan = build_release_browser_plan(release=release, packages=packages, targets_by_package=targets_by_package)
 
         async def _run() -> BrowserSubmissionResult:
-            browser = await launch(headless=self.headless, args=["--no-sandbox"])
+            browser = await launch(headless=self.headless, **PYPPETEER_LAUNCH_OPTIONS)
             page = await browser.newPage()
             events: list[dict] = []
             page.on(

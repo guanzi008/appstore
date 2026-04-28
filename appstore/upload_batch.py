@@ -7,6 +7,7 @@ from datetime import datetime
 import getpass
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
 
 from openpyxl import Workbook
 
@@ -20,6 +21,7 @@ from appstore.appstore_client import (
 )
 from appstore.browser_submission import BrowserSubmissionRunner
 from appstore.capabilities import load_capability_cache, sync_capabilities_to_cache
+from appstore.capture_workflow import CaptureOptions, capture_packages
 from appstore.examples.generate_template import generate_template
 from appstore.inspectors import inspect_package, read_package_info
 from appstore.deb import read_deb_package_info
@@ -249,6 +251,22 @@ def _extract_response_app_id(response: dict | None) -> str:
     if app_id:
         return str(app_id)
     return ""
+
+
+def _resolve_submitted_app_id(
+    *,
+    client,
+    app: AppRecord,
+    response: dict | None,
+    target_app_id: str,
+) -> str:
+    resolved_app_id = _extract_response_app_id(response) or target_app_id
+    if resolved_app_id:
+        return resolved_app_id
+    try:
+        return choose_target_app_id(client.find_apps_by_pkg_name(app.pkg_name), "")
+    except Exception:
+        return ""
 
 
 def _resolve_target_app_id(
@@ -858,6 +876,355 @@ def _build_package_uploads(client, packages: tuple[PackageRecord, ...]) -> dict[
     }
 
 
+def _build_override_app_uploads(
+    client,
+    *,
+    screenshot_paths: tuple[Path, ...] = (),
+    icon_path: Path | None = None,
+) -> dict[str, UploadedFileRef | tuple[UploadedFileRef, ...]] | None:
+    uploads: dict[str, UploadedFileRef | tuple[UploadedFileRef, ...]] = {}
+    if icon_path is not None:
+        uploads["icon"] = client.upload_file_bytes(
+            filename=icon_path.name,
+            data=icon_path.read_bytes(),
+            upload_type="icon",
+        )
+    if screenshot_paths:
+        uploads["screenshots"] = tuple(
+            client.upload_file_bytes(
+                filename=screenshot_path.name,
+                data=screenshot_path.read_bytes(),
+                upload_type="image",
+            )
+            for screenshot_path in screenshot_paths
+        )
+    return uploads or None
+
+
+def _normalize_arch_alias(arch: str) -> str:
+    normalized = arch.strip().lower()
+    aliases = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "loongarch64": "loong64",
+        "loong64": "loong64",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _detect_host_arch() -> str:
+    try:
+        completed = subprocess.run(
+            ["dpkg", "--print-architecture"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        detected = completed.stdout.strip()
+        if detected:
+            return _normalize_arch_alias(detected)
+    except Exception:
+        pass
+    return _normalize_arch_alias(os.uname().machine)
+
+
+def _select_capture_package_path(
+    *,
+    package_paths: list[Path],
+    package_infos: dict[str, DebPackageInfo],
+    capture_package: str = "",
+) -> Path:
+    if capture_package.strip():
+        requested = capture_package.strip()
+        for package_path in package_paths:
+            if requested in {str(package_path), package_path.name, package_path.stem}:
+                return package_path
+        raise RuntimeError(f"capture package not found in package list: {capture_package}")
+
+    host_arch = _detect_host_arch()
+    compatible_paths = [
+        package_path
+        for package_path in package_paths
+        if _normalize_arch_alias(package_infos[package_path.stem].pkg_arch) == host_arch
+    ]
+    if len(compatible_paths) == 1:
+        return compatible_paths[0]
+    if not compatible_paths and len(package_paths) == 1:
+        return package_paths[0]
+    if not compatible_paths:
+        raise RuntimeError(f"no package matches host architecture for capture: {host_arch}")
+    raise RuntimeError(f"multiple packages match host architecture for capture: {host_arch}")
+
+
+def _normalize_screenshot_paths(
+    screenshot_paths: list[str] | tuple[str, ...] | tuple[Path, ...] | list[Path],
+    *,
+    min_count: int = 3,
+    max_count: int = 6,
+) -> tuple[Path, ...]:
+    normalized = tuple(Path(path) for path in screenshot_paths)
+    if not normalized:
+        return ()
+    missing_paths = [str(path) for path in normalized if not path.exists()]
+    if missing_paths:
+        raise RuntimeError(f"screenshot files not found: {', '.join(missing_paths)}")
+    if len(normalized) < min_count:
+        raise RuntimeError(f"at least {min_count} screenshots are required")
+    if len(normalized) > max_count:
+        raise RuntimeError(f"at most {max_count} screenshots are supported")
+    return normalized
+
+
+def _write_direct_package_failure_report(
+    *,
+    output_dir: Path,
+    package_paths: list[Path],
+    message: str,
+    status: str,
+    package_infos: dict[str, DebPackageInfo] | None = None,
+) -> int:
+    results: list[RowResult] = []
+    package_info_map = package_infos or {}
+    for index, package_path in enumerate(package_paths, start=1):
+        package_info = package_info_map.get(package_path.stem)
+        results.append(
+            RowResult(
+                row_id=index,
+                app_key="" if package_info is None else package_info.pkg_name,
+                deb_path=package_path,
+                status=status,
+                message=message,
+                pkg_name="" if package_info is None else package_info.pkg_name,
+                pkg_version="" if package_info is None else package_info.pkg_version,
+                selector=f"pkg:{index}",
+            )
+        )
+    _write_reports(output_dir, results)
+    return 0
+
+
+def _run_direct_upload_packages(
+    *,
+    package_paths: list[Path],
+    output_dir: Path,
+    capabilities_cache: str,
+    username: str,
+    password: str,
+    mode: str,
+    session_cache_dir: str,
+    artifact_dir: str,
+    headless: bool,
+    app_id: str,
+    note: str,
+    release_key: str,
+    pkg_channel: str,
+    region: str,
+    screenshot_paths: tuple[Path, ...] = (),
+    icon_path: Path | None = None,
+) -> int:
+    results: list[RowResult] = []
+
+    try:
+        capability_cache = load_capability_cache(capabilities_cache)
+    except Exception as exc:
+        fallback_path = package_paths[0] if package_paths else Path("")
+        _write_reports(
+            output_dir,
+            [
+                RowResult(
+                    row_id=1,
+                    app_key="",
+                    deb_path=fallback_path,
+                    status="cache_failed",
+                    message=f"capability cache failed: {exc}",
+                )
+            ],
+        )
+        return 1
+
+    try:
+        pkg_name, packages, package_infos = _build_direct_packages(
+            package_paths=package_paths,
+            release_key=release_key,
+            pkg_channel=pkg_channel,
+        )
+    except Exception as exc:
+        return _write_direct_package_failure_report(
+            output_dir=output_dir,
+            package_paths=package_paths,
+            message=str(exc),
+            status="submit_failed",
+        )
+
+    try:
+        normalized_screenshot_paths = _normalize_screenshot_paths(screenshot_paths)
+    except Exception as exc:
+        return _write_direct_package_failure_report(
+            output_dir=output_dir,
+            package_paths=package_paths,
+            message=str(exc),
+            status="capture_failed",
+            package_infos=package_infos,
+        )
+
+    client = AppStoreClient()
+    try:
+        client.login(username, password)
+    except Exception as exc:
+        message = str(exc)
+        if not isinstance(exc, AuthenticationError):
+            message = f"{exc.__class__.__name__}: {message}"
+        for package in packages:
+            package_info = package_infos[package.package_key]
+            results.append(
+                _result_for_package(
+                    package=package,
+                    status="auth_failed",
+                    message=message,
+                    package_info=package_info,
+                    selector=f"pkg:{package.row_id}",
+                )
+            )
+        _write_reports(output_dir, results)
+        return 0
+
+    app_stub = AppRecord(
+        app_key=pkg_name,
+        app_name_zh=pkg_name,
+        pkg_name=pkg_name,
+        category_id=0,
+        website="",
+        short_desc_zh="",
+        full_desc_zh="",
+        icon_path=Path("."),
+        screenshot_paths=(),
+        app_id_override=app_id,
+    )
+    app_id_cache: dict[str, str] = {}
+    app_entry_cache: dict[str, dict] = {}
+    app_detail_cache: dict[str, dict] = {}
+
+    try:
+        target_app_id = _resolve_target_app_id(client, app_stub, app_id_cache, app_entry_cache)
+        if not target_app_id:
+            raise RuntimeError(f"existing app not found for package name: {pkg_name}")
+        existing_app_detail = _load_existing_app_detail(
+            client,
+            app_stub,
+            target_app_id,
+            app_detail_cache,
+            app_entry_cache,
+        )
+        if existing_app_detail is None:
+            raise RuntimeError("failed to load existing app detail")
+
+        app = _build_direct_app_record(
+            pkg_name=pkg_name,
+            target_app_id=target_app_id,
+            existing_app_detail=existing_app_detail,
+        )
+        region_value = region.strip() or str((existing_app_detail.get("app_basic_info") or {}).get("region", "") or "1")
+        release = _build_direct_release(
+            app_key=app.app_key,
+            release_key=release_key,
+            note=note,
+            region=region_value,
+            package_infos=list(package_infos.values()),
+        )
+        targets_by_package = {
+            package.package_key: (
+                _normalize_direct_target(
+                    package_record=package,
+                    package_info=package_infos[package.package_key],
+                    existing_app_detail=existing_app_detail,
+                    capability_cache=capability_cache,
+                ),
+            )
+            for package in packages
+        }
+        validated_release = validate_release_group(
+            app=app,
+            release=release,
+            packages=packages,
+            targets_by_package=targets_by_package,
+            inspected_by_package=package_infos,
+            capability_cache=capability_cache,
+        )
+
+        resolved_mode = (mode or "api").strip().lower() or "api"
+        if resolved_mode == "auto":
+            resolved_mode = "api"
+
+        override_app_uploads = _build_override_app_uploads(
+            client,
+            screenshot_paths=normalized_screenshot_paths,
+            icon_path=icon_path,
+        )
+        if resolved_mode == "browser" and override_app_uploads is not None:
+            raise RuntimeError("browser mode does not support screenshot/icon replacement for direct upload")
+
+        if resolved_mode == "browser":
+            browser_runner = BrowserSubmissionRunner(
+                username=username,
+                password=password,
+                session_cache_dir=session_cache_dir,
+                headless=headless,
+            )
+            artifact_root = (
+                Path(artifact_dir)
+                if artifact_dir
+                else output_dir / "debug-traces" / f"{pkg_name}-{release_key}"
+            )
+            browser_result = browser_runner.submit_release_group(
+                client=client,
+                app=app,
+                release=release,
+                packages=packages,
+                targets_by_package=targets_by_package,
+                target_app_id=target_app_id,
+                artifact_root=artifact_root,
+            )
+            resolved_app_id = getattr(browser_result, "app_id", "") or target_app_id
+        else:
+            uploads_by_package = _build_package_uploads(client, packages)
+            response = submit_grouped_release(
+                client=client,
+                validated_release=validated_release,
+                app_uploads=override_app_uploads,
+                uploads_by_package=uploads_by_package,
+                target_app_id=target_app_id,
+                existing_app_detail=existing_app_detail,
+            )
+            resolved_app_id = _extract_response_app_id(response) or target_app_id
+
+        results.extend(
+            _group_results_for_packages(
+                packages=packages,
+                package_infos={package.package_key: validated_package.package_info for package, validated_package in zip(packages, validated_release.packages)},
+                status="submitted",
+                message="submitted",
+                app_id=resolved_app_id,
+            )
+        )
+    except Exception as exc:
+        for package in packages:
+            package_info = package_infos.get(package.package_key)
+            results.append(
+                _result_for_package(
+                    package=package,
+                    status="submit_failed",
+                    message=str(exc),
+                    package_info=package_info,
+                    selector=f"pkg:{package.row_id}",
+                )
+            )
+
+    _write_reports(output_dir, results)
+    return 0
+
+
 def _run_upload(args) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else Path("appstore/output") / _timestamp_label()
     workbook = Path(args.workbook)
@@ -993,7 +1360,12 @@ def _run_upload(args) -> int:
                     target_app_id=target_app_id,
                     existing_app_detail=existing_app_detail,
                 )
-                resolved_app_id = _extract_response_app_id(response) or target_app_id
+                resolved_app_id = _resolve_submitted_app_id(
+                    client=client,
+                    app=app,
+                    response=response,
+                    target_app_id=target_app_id,
+                )
             if resolved_app_id:
                 app_id_cache[app.app_key] = resolved_app_id
             results.extend(
@@ -1029,194 +1401,212 @@ def _run_upload(args) -> int:
 
 def _run_upload_packages(args) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else Path("appstore/output") / _timestamp_label()
+    username, password = _resolve_credentials(args.username, args.password)
+    return _run_direct_upload_packages(
+        package_paths=[Path(path) for path in args.packages],
+        output_dir=output_dir,
+        capabilities_cache=args.capabilities_cache,
+        username=username,
+        password=password,
+        mode=args.mode,
+        session_cache_dir=args.session_cache_dir,
+        artifact_dir=args.artifact_dir,
+        headless=args.headless,
+        app_id=args.app_id,
+        note=args.note,
+        release_key=args.release_key,
+        pkg_channel=args.pkg_channel,
+        region=args.region,
+        screenshot_paths=tuple(Path(path) for path in args.screenshot),
+        icon_path=Path(args.icon) if args.icon else None,
+    )
+
+
+def _run_auto_upload_packages(args) -> int:
+    output_root = Path(args.output_dir) if args.output_dir else Path("appstore/output") / _timestamp_label()
     package_paths = [Path(path) for path in args.packages]
-    results: list[RowResult] = []
-
-    try:
-        capability_cache = load_capability_cache(args.capabilities_cache)
-    except Exception as exc:
-        fallback_path = package_paths[0] if package_paths else Path("")
-        _write_reports(
-            output_dir,
-            [
-                RowResult(
-                    row_id=1,
-                    app_key="",
-                    deb_path=fallback_path,
-                    status="cache_failed",
-                    message=f"capability cache failed: {exc}",
-                )
-            ],
+    if args.min_screenshots < 1:
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message="min-screenshots must be at least 1",
+            status="capture_failed",
         )
-        return 1
+    if args.max_screenshots < args.min_screenshots:
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message="max-screenshots must be greater than or equal to min-screenshots",
+            status="capture_failed",
+        )
+    if args.max_screenshots > 6:
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message="max-screenshots cannot exceed 6",
+            status="capture_failed",
+        )
 
     try:
-        pkg_name, packages, package_infos = _build_direct_packages(
+        _pkg_name, _packages, package_infos = _build_direct_packages(
             package_paths=package_paths,
             release_key=args.release_key,
             pkg_channel=args.pkg_channel,
         )
+        capture_package_path = _select_capture_package_path(
+            package_paths=package_paths,
+            package_infos=package_infos,
+            capture_package=args.capture_package,
+        )
     except Exception as exc:
-        for index, package_path in enumerate(package_paths, start=1):
-            results.append(
-                RowResult(
-                    row_id=index,
-                    app_key="",
-                    deb_path=package_path,
-                    status="submit_failed",
-                    message=str(exc),
-                    selector=f"pkg:{index}",
-                )
-            )
-        _write_reports(output_dir, results)
-        return 0
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message=str(exc),
+            status="capture_failed",
+        )
+
+    capture_results = capture_packages(
+        package_paths=[capture_package_path],
+        options=CaptureOptions(
+            output_dir=output_root / "capture",
+            steps=tuple(args.step or ()),
+            ai_prompt=args.ai_prompt,
+            ai_base_url=args.ai_base_url,
+            ai_model=args.ai_model,
+            ai_api_key=args.ai_api_key,
+            launch_command=args.launch_command,
+            desktop_file=args.desktop_file,
+            window_name=args.window_name,
+            window_class=args.window_class,
+            install_command=args.install_command,
+            uninstall_command=args.uninstall_command,
+            sudo_password=args.sudo_password,
+            screen_size=args.screen_size,
+            scale_filter=args.scale_filter,
+            capture_tool=args.capture_tool,
+            ocr_backend=args.ocr_backend,
+            ocr_python=args.ocr_python,
+            ocr_min_score=args.ocr_min_score,
+            skip_install=args.skip_install,
+            keep_installed=args.keep_installed,
+            dbus_session=args.dbus_session,
+            window_timeout=args.window_timeout,
+            settle_time=args.settle_time,
+            validate_screenshots=args.validate_screenshots,
+            min_screenshots=args.min_screenshots,
+            max_screenshots=args.max_screenshots,
+            min_screenshot_width=args.min_screenshot_width,
+            min_screenshot_height=args.min_screenshot_height,
+            min_screenshot_bytes=args.min_screenshot_bytes,
+            min_screenshot_stddev=args.min_screenshot_stddev,
+            min_screenshot_gray_levels=args.min_screenshot_gray_levels,
+        ),
+    )
+    capture_result = capture_results[0]
+    if capture_result.status != "captured":
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message=capture_result.message,
+            status="capture_failed",
+            package_infos=package_infos,
+        )
+
+    screenshot_paths = tuple(capture_result.screenshots[: args.max_screenshots])
+    if len(screenshot_paths) < args.min_screenshots:
+        return _write_direct_package_failure_report(
+            output_dir=output_root / "upload",
+            package_paths=package_paths,
+            message=(
+                f"captured screenshots below minimum: got {len(screenshot_paths)}, "
+                f"require at least {args.min_screenshots}"
+            ),
+            status="capture_failed",
+            package_infos=package_infos,
+        )
 
     username, password = _resolve_credentials(args.username, args.password)
-    client = AppStoreClient()
-    try:
-        client.login(username, password)
-    except Exception as exc:
-        message = str(exc)
-        if not isinstance(exc, AuthenticationError):
-            message = f"{exc.__class__.__name__}: {message}"
-        for package in packages:
-            package_info = package_infos[package.package_key]
-            results.append(
-                _result_for_package(
-                    package=package,
-                    status="auth_failed",
-                    message=message,
-                    package_info=package_info,
-                    selector=f"pkg:{package.row_id}",
-                )
-            )
-        _write_reports(output_dir, results)
-        return 0
-
-    app_stub = AppRecord(
-        app_key=pkg_name,
-        app_name_zh=pkg_name,
-        pkg_name=pkg_name,
-        category_id=0,
-        website="",
-        short_desc_zh="",
-        full_desc_zh="",
-        icon_path=Path("."),
-        screenshot_paths=(),
-        app_id_override=args.app_id,
+    return _run_direct_upload_packages(
+        package_paths=package_paths,
+        output_dir=output_root / "upload",
+        capabilities_cache=args.capabilities_cache,
+        username=username,
+        password=password,
+        mode=args.mode,
+        session_cache_dir=args.session_cache_dir,
+        artifact_dir=args.artifact_dir,
+        headless=args.headless,
+        app_id=args.app_id,
+        note=args.note,
+        release_key=args.release_key,
+        pkg_channel=args.pkg_channel,
+        region=args.region,
+        screenshot_paths=screenshot_paths,
+        icon_path=Path(args.icon) if args.icon else None,
     )
-    app_id_cache: dict[str, str] = {}
-    app_entry_cache: dict[str, dict] = {}
-    app_detail_cache: dict[str, dict] = {}
 
-    try:
-        target_app_id = _resolve_target_app_id(client, app_stub, app_id_cache, app_entry_cache)
-        if not target_app_id:
-            raise RuntimeError(f"existing app not found for package name: {pkg_name}")
-        existing_app_detail = _load_existing_app_detail(
-            client,
-            app_stub,
-            target_app_id,
-            app_detail_cache,
-            app_entry_cache,
+
+def _run_capture_packages(args) -> int:
+    output_dir = Path(args.output_dir) if args.output_dir else Path("appstore/captures") / _timestamp_label()
+    if args.min_screenshots < 1:
+        return _write_direct_package_failure_report(
+            output_dir=output_dir,
+            package_paths=[Path(path) for path in args.packages],
+            message="min-screenshots must be at least 1",
+            status="capture_failed",
         )
-        if existing_app_detail is None:
-            raise RuntimeError("failed to load existing app detail")
-
-        app = _build_direct_app_record(
-            pkg_name=pkg_name,
-            target_app_id=target_app_id,
-            existing_app_detail=existing_app_detail,
+    if args.max_screenshots < args.min_screenshots:
+        return _write_direct_package_failure_report(
+            output_dir=output_dir,
+            package_paths=[Path(path) for path in args.packages],
+            message="max-screenshots must be greater than or equal to min-screenshots",
+            status="capture_failed",
         )
-        region = args.region.strip() or str((existing_app_detail.get("app_basic_info") or {}).get("region", "") or "1")
-        release = _build_direct_release(
-            app_key=app.app_key,
-            release_key=args.release_key,
-            note=args.note,
-            region=region,
-            package_infos=list(package_infos.values()),
+    if args.max_screenshots > 12:
+        return _write_direct_package_failure_report(
+            output_dir=output_dir,
+            package_paths=[Path(path) for path in args.packages],
+            message="max-screenshots cannot exceed 12",
+            status="capture_failed",
         )
-        targets_by_package = {
-            package.package_key: (
-                _normalize_direct_target(
-                    package_record=package,
-                    package_info=package_infos[package.package_key],
-                    existing_app_detail=existing_app_detail,
-                    capability_cache=capability_cache,
-                ),
-            )
-            for package in packages
-        }
-        validated_release = validate_release_group(
-            app=app,
-            release=release,
-            packages=packages,
-            targets_by_package=targets_by_package,
-            inspected_by_package=package_infos,
-            capability_cache=capability_cache,
-        )
-
-        mode = (args.mode or "api").strip().lower() or "api"
-        if mode == "auto":
-            mode = "api"
-
-        if mode == "browser":
-            browser_runner = BrowserSubmissionRunner(
-                username=username,
-                password=password,
-                session_cache_dir=args.session_cache_dir,
-                headless=args.headless,
-            )
-            artifact_root = (
-                Path(args.artifact_dir)
-                if args.artifact_dir
-                else output_dir / "debug-traces" / f"{pkg_name}-{args.release_key}"
-            )
-            browser_result = browser_runner.submit_release_group(
-                client=client,
-                app=app,
-                release=release,
-                packages=packages,
-                targets_by_package=targets_by_package,
-                target_app_id=target_app_id,
-                artifact_root=artifact_root,
-            )
-            resolved_app_id = getattr(browser_result, "app_id", "") or target_app_id
-        else:
-            uploads_by_package = _build_package_uploads(client, packages)
-            response = submit_grouped_release(
-                client=client,
-                validated_release=validated_release,
-                app_uploads=None,
-                uploads_by_package=uploads_by_package,
-                target_app_id=target_app_id,
-                existing_app_detail=existing_app_detail,
-            )
-            resolved_app_id = _extract_response_app_id(response) or target_app_id
-
-        results.extend(
-            _group_results_for_packages(
-                packages=packages,
-                package_infos={package.package_key: validated_package.package_info for package, validated_package in zip(packages, validated_release.packages)},
-                status="submitted",
-                message="submitted",
-                app_id=resolved_app_id,
-            )
-        )
-    except Exception as exc:
-        for package in packages:
-            package_info = package_infos.get(package.package_key)
-            results.append(
-                _result_for_package(
-                    package=package,
-                    status="submit_failed",
-                    message=str(exc),
-                    package_info=package_info,
-                    selector=f"pkg:{package.row_id}",
-                )
-            )
-
-    _write_reports(output_dir, results)
+    capture_packages(
+        package_paths=[Path(path) for path in args.packages],
+        options=CaptureOptions(
+            output_dir=output_dir,
+            steps=tuple(args.step or ()),
+            ai_prompt=args.ai_prompt,
+            ai_base_url=args.ai_base_url,
+            ai_model=args.ai_model,
+            ai_api_key=args.ai_api_key,
+            launch_command=args.launch_command,
+            desktop_file=args.desktop_file,
+            window_name=args.window_name,
+            window_class=args.window_class,
+            install_command=args.install_command,
+            uninstall_command=args.uninstall_command,
+            sudo_password=args.sudo_password,
+            screen_size=args.screen_size,
+            scale_filter=args.scale_filter,
+            capture_tool=args.capture_tool,
+            ocr_backend=args.ocr_backend,
+            ocr_python=args.ocr_python,
+            ocr_min_score=args.ocr_min_score,
+            skip_install=args.skip_install,
+            keep_installed=args.keep_installed,
+            dbus_session=args.dbus_session,
+            window_timeout=args.window_timeout,
+            settle_time=args.settle_time,
+            validate_screenshots=args.validate_screenshots,
+            min_screenshots=args.min_screenshots,
+            max_screenshots=args.max_screenshots,
+            min_screenshot_width=args.min_screenshot_width,
+            min_screenshot_height=args.min_screenshot_height,
+            min_screenshot_bytes=args.min_screenshot_bytes,
+            min_screenshot_stddev=args.min_screenshot_stddev,
+            min_screenshot_gray_levels=args.min_screenshot_gray_levels,
+        ),
+    )
     return 0
 
 
@@ -1263,6 +1653,116 @@ def build_parser() -> argparse.ArgumentParser:
     upload_packages_parser.add_argument("--release-key", default="direct-update")
     upload_packages_parser.add_argument("--pkg-channel", default="")
     upload_packages_parser.add_argument("--region", default="")
+    upload_packages_parser.add_argument("--screenshot", action="append", default=[])
+    upload_packages_parser.add_argument("--icon", default="")
+
+    capture_packages_parser = subparsers.add_parser("capture-packages")
+    capture_packages_parser.add_argument("packages", nargs="+")
+    capture_packages_parser.add_argument("--output-dir", default="")
+    capture_packages_parser.add_argument("--step", action="append", default=[])
+    capture_packages_parser.add_argument("--ai-prompt", default="")
+    capture_packages_parser.add_argument(
+        "--ai-base-url",
+        default=os.environ.get("APPSTORE_AI_BASE_URL", "http://127.0.0.1:8787/v1"),
+    )
+    capture_packages_parser.add_argument(
+        "--ai-model",
+        default=os.environ.get("APPSTORE_AI_MODEL", "openai-codex/gpt-5.4"),
+    )
+    capture_packages_parser.add_argument(
+        "--ai-api-key",
+        default=os.environ.get("APPSTORE_AI_API_KEY", ""),
+    )
+    capture_packages_parser.add_argument("--launch-command", default="")
+    capture_packages_parser.add_argument("--desktop-file", default="")
+    capture_packages_parser.add_argument("--window-name", default="")
+    capture_packages_parser.add_argument("--window-class", default="")
+    capture_packages_parser.add_argument("--install-command", default="")
+    capture_packages_parser.add_argument("--uninstall-command", default="")
+    capture_packages_parser.add_argument(
+        "--sudo-password",
+        default=os.environ.get("APPSTORE_SUDO_PASSWORD", ""),
+    )
+    capture_packages_parser.add_argument("--screen-size", default="1920x1080x24")
+    capture_packages_parser.add_argument("--scale-filter", default="1280:-2")
+    capture_packages_parser.add_argument("--capture-tool", choices=("scrot", "ffmpeg"), default="scrot")
+    capture_packages_parser.add_argument("--ocr-backend", choices=("auto", "rapidocr", "off"), default="auto")
+    capture_packages_parser.add_argument("--ocr-python", default=os.environ.get("APPSTORE_OCR_PYTHON", ""))
+    capture_packages_parser.add_argument("--ocr-min-score", type=float, default=0.35)
+    capture_packages_parser.add_argument("--skip-install", action=argparse.BooleanOptionalAction, default=False)
+    capture_packages_parser.add_argument("--keep-installed", action=argparse.BooleanOptionalAction, default=False)
+    capture_packages_parser.add_argument("--dbus-session", action=argparse.BooleanOptionalAction, default=True)
+    capture_packages_parser.add_argument("--window-timeout", type=float, default=30.0)
+    capture_packages_parser.add_argument("--settle-time", type=float, default=1.5)
+    capture_packages_parser.add_argument("--validate-screenshots", action=argparse.BooleanOptionalAction, default=True)
+    capture_packages_parser.add_argument("--min-screenshots", type=int, default=1)
+    capture_packages_parser.add_argument("--max-screenshots", type=int, default=6)
+    capture_packages_parser.add_argument("--min-screenshot-width", type=int, default=640)
+    capture_packages_parser.add_argument("--min-screenshot-height", type=int, default=360)
+    capture_packages_parser.add_argument("--min-screenshot-bytes", type=int, default=4096)
+    capture_packages_parser.add_argument("--min-screenshot-stddev", type=float, default=2.5)
+    capture_packages_parser.add_argument("--min-screenshot-gray-levels", type=int, default=8)
+
+    auto_upload_packages_parser = subparsers.add_parser("auto-upload-packages")
+    auto_upload_packages_parser.add_argument("packages", nargs="+")
+    auto_upload_packages_parser.add_argument("--output-dir", default="")
+    auto_upload_packages_parser.add_argument("--capabilities-cache", default="appstore/cache/capabilities")
+    auto_upload_packages_parser.add_argument("--username", default="")
+    auto_upload_packages_parser.add_argument("--password", default="")
+    auto_upload_packages_parser.add_argument("--mode", choices=("auto", "api", "browser"), default="api")
+    auto_upload_packages_parser.add_argument("--session-cache-dir", default="appstore/cache/session-state")
+    auto_upload_packages_parser.add_argument("--artifact-dir", default="")
+    auto_upload_packages_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    auto_upload_packages_parser.add_argument("--app-id", default="")
+    auto_upload_packages_parser.add_argument("--note", default="")
+    auto_upload_packages_parser.add_argument("--release-key", default="direct-update")
+    auto_upload_packages_parser.add_argument("--pkg-channel", default="")
+    auto_upload_packages_parser.add_argument("--region", default="")
+    auto_upload_packages_parser.add_argument("--icon", default="")
+    auto_upload_packages_parser.add_argument("--capture-package", default="")
+    auto_upload_packages_parser.add_argument("--min-screenshots", type=int, default=3)
+    auto_upload_packages_parser.add_argument("--max-screenshots", type=int, default=6)
+    auto_upload_packages_parser.add_argument("--step", action="append", default=[])
+    auto_upload_packages_parser.add_argument("--ai-prompt", default="")
+    auto_upload_packages_parser.add_argument(
+        "--ai-base-url",
+        default=os.environ.get("APPSTORE_AI_BASE_URL", "http://127.0.0.1:8787/v1"),
+    )
+    auto_upload_packages_parser.add_argument(
+        "--ai-model",
+        default=os.environ.get("APPSTORE_AI_MODEL", "openai-codex/gpt-5.4"),
+    )
+    auto_upload_packages_parser.add_argument(
+        "--ai-api-key",
+        default=os.environ.get("APPSTORE_AI_API_KEY", ""),
+    )
+    auto_upload_packages_parser.add_argument("--launch-command", default="")
+    auto_upload_packages_parser.add_argument("--desktop-file", default="")
+    auto_upload_packages_parser.add_argument("--window-name", default="")
+    auto_upload_packages_parser.add_argument("--window-class", default="")
+    auto_upload_packages_parser.add_argument("--install-command", default="")
+    auto_upload_packages_parser.add_argument("--uninstall-command", default="")
+    auto_upload_packages_parser.add_argument(
+        "--sudo-password",
+        default=os.environ.get("APPSTORE_SUDO_PASSWORD", ""),
+    )
+    auto_upload_packages_parser.add_argument("--screen-size", default="1920x1080x24")
+    auto_upload_packages_parser.add_argument("--scale-filter", default="1280:-2")
+    auto_upload_packages_parser.add_argument("--capture-tool", choices=("scrot", "ffmpeg"), default="scrot")
+    auto_upload_packages_parser.add_argument("--ocr-backend", choices=("auto", "rapidocr", "off"), default="auto")
+    auto_upload_packages_parser.add_argument("--ocr-python", default=os.environ.get("APPSTORE_OCR_PYTHON", ""))
+    auto_upload_packages_parser.add_argument("--ocr-min-score", type=float, default=0.35)
+    auto_upload_packages_parser.add_argument("--skip-install", action=argparse.BooleanOptionalAction, default=False)
+    auto_upload_packages_parser.add_argument("--keep-installed", action=argparse.BooleanOptionalAction, default=False)
+    auto_upload_packages_parser.add_argument("--dbus-session", action=argparse.BooleanOptionalAction, default=True)
+    auto_upload_packages_parser.add_argument("--window-timeout", type=float, default=30.0)
+    auto_upload_packages_parser.add_argument("--settle-time", type=float, default=1.5)
+    auto_upload_packages_parser.add_argument("--validate-screenshots", action=argparse.BooleanOptionalAction, default=True)
+    auto_upload_packages_parser.add_argument("--min-screenshot-width", type=int, default=640)
+    auto_upload_packages_parser.add_argument("--min-screenshot-height", type=int, default=360)
+    auto_upload_packages_parser.add_argument("--min-screenshot-bytes", type=int, default=4096)
+    auto_upload_packages_parser.add_argument("--min-screenshot-stddev", type=float, default=2.5)
+    auto_upload_packages_parser.add_argument("--min-screenshot-gray-levels", type=int, default=8)
 
     template_parser = subparsers.add_parser("generate-template")
     template_parser.add_argument("output_path", nargs="?", default="appstore/examples/template.xlsx")
@@ -1507,6 +2007,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_upload(args)
     if args.command == "upload-packages":
         return _run_upload_packages(args)
+    if args.command == "capture-packages":
+        return _run_capture_packages(args)
+    if args.command == "auto-upload-packages":
+        return _run_auto_upload_packages(args)
     if args.command == "generate-template":
         generate_template(args.output_path, capability_cache_path=args.capabilities_cache)
         return 0

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -520,6 +521,10 @@ class RunBatchTests(unittest.TestCase):
                     targets=(target_two,),
                 ),
             ),
+            system_line_labels={
+                "11": "communityV23",
+                "21": "communityV25",
+            },
         )
 
     def _build_capability_cache(self) -> CapabilityCache:
@@ -1546,6 +1551,185 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in report], ["submitted", "submitted"])
         self.assertEqual([row["app_id"] for row in report], ["1096227", "1096227"])
 
+    def test_main_upload_packages_subcommand_uploads_manual_screenshots_for_existing_app(self) -> None:
+        output_dir = self.root / "upload-packages-screenshots-output"
+        cache_dir = self.root / "capabilities-cache"
+        cache_dir.mkdir()
+        client = FakeClient()
+        client.matches_by_pkg_name["labelnova"] = [{"app_id": "1096227", "id": "detail-id"}]
+        client.detail_by_id["detail-id"] = {
+            "app_basic_info": {"app_name": "LabelNova", "category_id": 1, "website": "https://mm.md/p/", "region": "1"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN",
+                    "name": "LabelNova",
+                    "brief_info": "旧简介",
+                    "desc_info": "旧详情",
+                    "update_desc": "旧更新说明",
+                    "icon_save_key": "existing-icon",
+                    "appScreenShotList": [
+                        {"screen_shot_key": "existing-shot-1", "image_mode": 1, "sort": 0},
+                    ],
+                }
+            ],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": None,
+            },
+            "app_origin_pkgs": [],
+        }
+        screenshot_paths = []
+        for index in range(1, 4):
+            path = self.root / f"manual-shot-{index}.png"
+            path.write_bytes(f"manual-shot-{index}".encode("utf-8"))
+            screenshot_paths.append(path)
+
+        with (
+            patch("appstore.upload_batch.AppStoreClient", return_value=client),
+            patch("appstore.upload_batch.load_capability_cache", return_value=self._build_store_capability_cache()),
+            patch(
+                "appstore.upload_batch.read_package_info",
+                return_value=DebPackageInfo(
+                    pkg_name="labelnova",
+                    pkg_version="1.0.5-1",
+                    pkg_arch="amd64",
+                    pkg_size=111,
+                    sha256="sha-amd64",
+                    deb_path=self.deb_paths[0],
+                ),
+            ),
+            patch("appstore.upload_batch.submit_grouped_release", return_value={"datas": {"app_id": "1096227"}}) as submit_mock,
+        ):
+            exit_code = main(
+                [
+                    "upload-packages",
+                    str(self.deb_paths[0]),
+                    "--output-dir",
+                    str(output_dir),
+                    "--capabilities-cache",
+                    str(cache_dir),
+                    "--username",
+                    "demo",
+                    "--password",
+                    "secret",
+                    "--screenshot",
+                    str(screenshot_paths[0]),
+                    "--screenshot",
+                    str(screenshot_paths[1]),
+                    "--screenshot",
+                    str(screenshot_paths[2]),
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        app_uploads = submit_mock.call_args.kwargs["app_uploads"]
+        self.assertIsNotNone(app_uploads)
+        self.assertEqual(len(app_uploads["screenshots"]), 3)
+        self.assertEqual([call[2] for call in client.upload_calls], ["image", "image", "image", "temppkg"])
+
+    def test_main_auto_upload_packages_subcommand_captures_then_uploads(self) -> None:
+        output_dir = self.root / "auto-upload-packages-output"
+        cache_dir = self.root / "capabilities-cache"
+        cache_dir.mkdir()
+        client = FakeClient()
+        client.matches_by_pkg_name["labelnova"] = [{"app_id": "1096227", "id": "detail-id"}]
+        client.detail_by_id["detail-id"] = {
+            "app_basic_info": {"app_name": "LabelNova", "category_id": 1, "website": "https://mm.md/p/", "region": "1"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN",
+                    "name": "LabelNova",
+                    "brief_info": "旧简介",
+                    "desc_info": "旧详情",
+                    "update_desc": "旧更新说明",
+                    "icon_save_key": "existing-icon",
+                    "appScreenShotList": [],
+                }
+            ],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": None,
+            },
+            "app_origin_pkgs": [],
+        }
+        captured_screenshots = []
+        for index in range(1, 4):
+            path = self.root / f"captured-shot-{index}.png"
+            path.write_bytes(f"captured-shot-{index}".encode("utf-8"))
+            captured_screenshots.append(path)
+
+        with (
+            patch("appstore.upload_batch.AppStoreClient", return_value=client),
+            patch("appstore.upload_batch.load_capability_cache", return_value=self._build_store_capability_cache()),
+            patch(
+                "appstore.upload_batch.read_package_info",
+                side_effect=lambda family, package_format, package_path: (
+                    DebPackageInfo(
+                        pkg_name="labelnova",
+                        pkg_version="1.0.5-1",
+                        pkg_arch="amd64",
+                        pkg_size=111,
+                        sha256="sha-amd64",
+                        deb_path=self.deb_paths[0],
+                    )
+                    if Path(package_path) == self.deb_paths[0]
+                    else DebPackageInfo(
+                        pkg_name="labelnova",
+                        pkg_version="1.0.5-1",
+                        pkg_arch="arm64",
+                        pkg_size=222,
+                        sha256="sha-arm64",
+                        deb_path=self.deb_paths[1],
+                    )
+                ),
+            ),
+            patch(
+                "appstore.upload_batch.capture_packages",
+                return_value=[
+                    type(
+                        "CaptureResult",
+                        (),
+                        {
+                            "status": "captured",
+                            "message": "captured 3 screenshot(s)",
+                            "screenshots": tuple(captured_screenshots),
+                        },
+                    )()
+                ],
+            ) as capture_mock,
+            patch("appstore.upload_batch.submit_grouped_release", return_value={"datas": {"app_id": "1096227"}}) as submit_mock,
+        ):
+            exit_code = main(
+                [
+                    "auto-upload-packages",
+                    str(self.deb_paths[0]),
+                    str(self.deb_paths[1]),
+                    "--output-dir",
+                    str(output_dir),
+                    "--capabilities-cache",
+                    str(cache_dir),
+                    "--username",
+                    "demo",
+                    "--password",
+                    "secret",
+                    "--note",
+                    "自动更新",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(capture_mock.call_args.kwargs["package_paths"], [self.deb_paths[0]])
+        app_uploads = submit_mock.call_args.kwargs["app_uploads"]
+        self.assertIsNotNone(app_uploads)
+        self.assertEqual(len(app_uploads["screenshots"]), 3)
+        self.assertTrue((output_dir / "upload" / "report.json").exists())
+
     def test_main_upload_packages_subcommand_rejects_mixed_package_names(self) -> None:
         output_dir = self.root / "upload-packages-invalid-output"
         cache_dir = self.root / "capabilities-cache"
@@ -1829,6 +2013,51 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual(len(report), 1)
         self.assertEqual(report[0]["status"], "workbook_failed")
         self.assertIn("broken.xlsx", report[0]["deb_path"])
+
+    def test_main_routes_capture_packages_subcommand(self) -> None:
+        package_path = self.root / "demo.deb"
+        package_path.write_bytes(b"deb-bytes")
+
+        with patch("appstore.upload_batch.capture_packages") as capture_mock:
+            exit_code = main(["capture-packages", str(package_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(capture_mock.call_count, 1)
+        self.assertEqual(capture_mock.call_args.kwargs["package_paths"], [package_path])
+
+    def test_main_capture_packages_reads_sudo_password_from_env(self) -> None:
+        package_path = self.root / "demo.deb"
+        package_path.write_bytes(b"deb-bytes")
+
+        with patch.dict(os.environ, {"APPSTORE_SUDO_PASSWORD": "123"}, clear=False):
+            with patch("appstore.upload_batch.capture_packages") as capture_mock:
+                exit_code = main(["capture-packages", str(package_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(capture_mock.call_count, 1)
+        self.assertEqual(capture_mock.call_args.kwargs["options"].sudo_password, "123")
+
+    def test_main_capture_packages_passes_screenshot_limits(self) -> None:
+        package_path = self.root / "demo.deb"
+        package_path.write_bytes(b"deb-bytes")
+
+        with patch("appstore.upload_batch.capture_packages") as capture_mock:
+            exit_code = main(
+                [
+                    "capture-packages",
+                    str(package_path),
+                    "--min-screenshots",
+                    "2",
+                    "--max-screenshots",
+                    "4",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(capture_mock.call_count, 1)
+        options = capture_mock.call_args.kwargs["options"]
+        self.assertEqual(options.min_screenshots, 2)
+        self.assertEqual(options.max_screenshots, 4)
 
 
 if __name__ == "__main__":

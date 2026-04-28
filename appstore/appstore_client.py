@@ -21,6 +21,12 @@ BASE = f"{ORIGIN}/devprod-api"
 REQUEST_TIMEOUT = 120
 UPLOAD_PUT_TIMEOUT = 900
 UPLOAD_PUT_ATTEMPTS = 3
+PYPPETEER_LAUNCH_OPTIONS = {
+    "args": ["--no-sandbox"],
+    "handleSIGINT": False,
+    "handleSIGTERM": False,
+    "handleSIGHUP": False,
+}
 
 
 class AppLookupAmbiguousError(RuntimeError):
@@ -69,6 +75,20 @@ def _resolve_baseline_values(baseline: str) -> list[str]:
     return [normalized]
 
 
+def _adapt_code_objects(codes: tuple[str, ...] | list[str] | None) -> list[dict]:
+    if codes is None:
+        return []
+    result: list[dict] = []
+    seen: set[str] = set()
+    for code in codes:
+        normalized = str(code).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append({"code": int(normalized) if normalized.isdigit() else normalized})
+    return result
+
+
 def _pick_auth_headers(*, local_storage: dict | None = None, session_storage: dict | None = None) -> tuple[str, str]:
     storage_chain = (session_storage or {}, local_storage or {})
     direct_authorization = ("authorization", "authorizationtoken", "auth", "authtoken")
@@ -111,6 +131,9 @@ def _pick_auth_cookie(cookies: list[dict] | None = None) -> str:
 def _normalize_app_list_payload(payload: dict | list, action: str) -> list[dict]:
     if isinstance(payload, list):
         return payload
+    rows = payload.get("rows")
+    if isinstance(rows, list):
+        return rows
     datas = payload.get("datas", payload)
     if isinstance(datas, list):
         return datas
@@ -119,6 +142,24 @@ def _normalize_app_list_payload(payload: dict | list, action: str) -> list[dict]
             value = datas.get(key)
             if isinstance(value, list):
                 return value
+    raise AppStoreProtocolError(f"{action} returned unexpected payload: {payload}")
+
+
+def _normalize_paged_rows_payload(payload: dict | list, action: str) -> dict:
+    if isinstance(payload, list):
+        return {"total": len(payload), "rows": payload}
+    if not isinstance(payload, dict):
+        raise AppStoreProtocolError(f"{action} returned unexpected payload: {payload}")
+    rows = payload.get("rows")
+    total = payload.get("total", 0)
+    if isinstance(rows, list):
+        return {"total": int(total or len(rows)), "rows": rows}
+    datas = payload.get("datas")
+    if isinstance(datas, dict):
+        rows = datas.get("rows") or datas.get("list") or datas.get("records")
+        total = datas.get("total", total)
+        if isinstance(rows, list):
+            return {"total": int(total or len(rows)), "rows": rows}
     raise AppStoreProtocolError(f"{action} returned unexpected payload: {payload}")
 
 
@@ -141,6 +182,9 @@ def build_submit_payload(
     uploads: dict[str, UploadedFileRef | tuple[UploadedFileRef, ...]],
     target_app_id: str,
     existing_app_detail: dict | None = None,
+    existing_app_overrides: dict[str, object] | None = None,
+    localized_lan_texts: dict[str, dict[str, str]] | None = None,
+    desired_lans: tuple[str, ...] | None = None,
 ) -> dict:
     platform = resolve_store_platform(release.system_platform)
     release_arch = resolve_store_arch(release.arch)
@@ -152,6 +196,8 @@ def build_submit_payload(
     arch = package_arch
     region_code = _resolve_region_code(release.region)
     baseline_values = _resolve_baseline_values(release.baseline)
+    cpu_clip_codes = getattr(release, "cpu_clip_codes", None)
+    motherboard_codes = getattr(release, "motherboard_codes", None)
     package_upload = uploads["package"]
     package_install_mode = 1
     origin_pkg = {
@@ -179,15 +225,49 @@ def build_submit_payload(
     }
 
     if existing_app_detail is not None:
+        overrides = existing_app_overrides or {}
         app_info = {
             "app_lan_infos": build_reused_lan_infos(
                 existing_app_detail,
                 release_note=release.note,
+                screenshot_uploads=(
+                    tuple(uploads["screenshots"])
+                    if "screenshots" in uploads
+                    else None
+                ),
+                icon_upload=uploads["icon"] if "icon" in uploads else None,
+                name=(
+                    str(overrides["app_name_zh"]).strip()
+                    if "app_name_zh" in overrides and overrides["app_name_zh"] is not None
+                    else None
+                ),
+                brief_info=(
+                    str(overrides["short_desc_zh"]).strip()
+                    if "short_desc_zh" in overrides and overrides["short_desc_zh"] is not None
+                    else None
+                ),
+                desc_info=(
+                    str(overrides["full_desc_zh"]).strip()
+                    if "full_desc_zh" in overrides and overrides["full_desc_zh"] is not None
+                    else None
+                ),
+                localized_texts=localized_lan_texts,
+                desired_lans=desired_lans,
             ),
             "app_basic_info": build_reused_basic_info(
                 existing_app_detail,
                 package_install_mode=package_install_mode,
                 region=str(region_code),
+                category_id=(
+                    int(overrides["category_id"])
+                    if "category_id" in overrides and overrides["category_id"] is not None
+                    else None
+                ),
+                website=(
+                    str(overrides["website"]).strip()
+                    if "website" in overrides and overrides["website"] is not None
+                    else None
+                ),
             ),
             "app_fit_info": build_reused_fit_info(
                 existing_app_detail,
@@ -195,7 +275,9 @@ def build_submit_payload(
                 fit_baseline_ids=baseline_values,
                 fit_unsupported_ids=[],
                 fit_arch_codes=[str(arch.code)],
-                region_code=region_code,
+                region_codes=[region_code],
+                fit_cpu_clip_codes=list(cpu_clip_codes) if cpu_clip_codes is not None else None,
+                fit_motherboard_codes=list(motherboard_codes) if motherboard_codes is not None else None,
             ),
             "app_origin_pkgs": merge_origin_pkgs(existing_app_detail, [origin_pkg]),
         }
@@ -203,22 +285,21 @@ def build_submit_payload(
         screenshots = uploads["screenshots"]
         icon_upload = uploads["icon"]
         app_info = {
-            "app_lan_infos": [
-                {
-                    "lan": "zh_CN",
-                    "label": "中文（简体）",
-                    "lanStr": "中文（简体）",
-                    "name": app.app_name_zh,
-                    "brief_info": app.short_desc_zh,
-                    "desc_info": app.full_desc_zh,
-                    "dev_name": "",
-                    "icon_save_key": icon_upload.file_save_key,
-                    "appScreenShotList": [
-                        {"screen_shot_key": shot.file_save_key, "image_mode": 1, "size": shot.size, "sort": index}
-                        for index, shot in enumerate(screenshots)
-                    ],
-                }
-            ],
+            "app_lan_infos": build_reused_lan_infos(
+                None,
+                release_note=release.note,
+                screenshot_uploads=tuple(screenshots),
+                icon_upload=icon_upload,
+                localized_texts=localized_lan_texts
+                or {
+                    "zh_CN": {
+                        "name": app.app_name_zh,
+                        "brief_info": app.short_desc_zh,
+                        "desc_info": app.full_desc_zh,
+                    }
+                },
+                desired_lans=desired_lans or ("zh_CN",),
+            ),
             "app_basic_info": {
                 "default_lan": "zh_CN",
                 "pkg_mode": 0,
@@ -235,8 +316,8 @@ def build_submit_payload(
                 "system_platform": [{"code": platform.code}],
                 "region": [{"code": region_code}],
                 "arch": [{"code": arch.code}],
-                "cpu_clip": [],
-                "motherboard": [],
+                "cpu_clip": _adapt_code_objects(cpu_clip_codes),
+                "motherboard": _adapt_code_objects(motherboard_codes),
                 "supWayland": 0,
             },
             "app_origin_pkgs": [origin_pkg],
@@ -317,7 +398,7 @@ class AppStoreClient:
         return payload
 
     async def _login_and_export_state(self, username: str, password: str) -> tuple[list[dict], dict, dict]:
-        browser = await launch(headless=True, args=["--no-sandbox"])
+        browser = await launch(headless=True, **PYPPETEER_LAUNCH_OPTIONS)
         try:
             page = await browser.newPage()
             await page.goto(f"{ORIGIN}/#/index", {"waitUntil": "networkidle2", "timeout": 120000})
@@ -398,6 +479,36 @@ class AppStoreClient:
             raise AppStoreProtocolError(f"fetch_adapt_info returned unexpected payload: {payload}")
         return payload
 
+    def fetch_categories(self) -> list[dict]:
+        payload = self._ensure_ok(
+            self.session.get(
+                f"{BASE}/store-dev-app/category",
+                timeout=REQUEST_TIMEOUT,
+            ),
+            "fetch_categories",
+        )
+        if not isinstance(payload, dict):
+            raise AppStoreProtocolError(f"fetch_categories returned unexpected payload: {payload}")
+        rows = payload.get("datas", [])
+        if not isinstance(rows, list):
+            raise AppStoreProtocolError(f"fetch_categories returned unexpected payload: {payload}")
+        return list(rows)
+
+    def fetch_dev_info(self) -> dict:
+        payload = self._ensure_ok(
+            self.session.get(
+                f"{BASE}/store-dev-auth/dev_info",
+                timeout=REQUEST_TIMEOUT,
+            ),
+            "fetch_dev_info",
+        )
+        if not isinstance(payload, dict):
+            raise AppStoreProtocolError(f"fetch_dev_info returned unexpected payload: {payload}")
+        datas = payload.get("datas")
+        if not isinstance(datas, dict):
+            raise AppStoreProtocolError(f"fetch_dev_info returned unexpected payload: {payload}")
+        return datas
+
     def list_apps(self, page_num: int = 1, page_size: int = 200) -> list[dict]:
         payload = self._ensure_ok(
             self.session.get(
@@ -408,6 +519,75 @@ class AppStoreClient:
             "list_apps",
         )
         return _normalize_app_list_payload(payload, "list_apps")
+
+    def list_apps_paged(self, page_num: int = 1, page_size: int = 50, **filters: object) -> dict:
+        params = {"pageNum": page_num, "pageSize": page_size}
+        params.update({key: value for key, value in filters.items() if value not in (None, "")})
+        payload = self._ensure_ok(
+            self.session.get(
+                f"{BASE}/store-dev-app/app",
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            ),
+            "list_apps_paged",
+        )
+        return _normalize_paged_rows_payload(payload, "list_apps_paged")
+
+    def report_my_apps(self) -> dict:
+        payload = self._ensure_ok(
+            self.session.get(f"{BASE}/store-dev-app/report/my-apps", timeout=REQUEST_TIMEOUT),
+            "report_my_apps",
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("datas"), dict):
+            raise AppStoreProtocolError(f"report_my_apps returned unexpected payload: {payload}")
+        return payload["datas"]
+
+    def report_my_downcounts(self) -> dict:
+        payload = self._ensure_ok(
+            self.session.get(f"{BASE}/store-dev-app/report/my-downcounts", timeout=REQUEST_TIMEOUT),
+            "report_my_downcounts",
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("datas"), dict):
+            raise AppStoreProtocolError(f"report_my_downcounts returned unexpected payload: {payload}")
+        return payload["datas"]
+
+    def report_my_comments(self) -> dict:
+        payload = self._ensure_ok(
+            self.session.get(f"{BASE}/store-dev-app/report/my-comments", timeout=REQUEST_TIMEOUT),
+            "report_my_comments",
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("datas"), dict):
+            raise AppStoreProtocolError(f"report_my_comments returned unexpected payload: {payload}")
+        return payload["datas"]
+
+    def get_app_history(self, app_id: str, page_num: int = 1, page_size: int = 10) -> dict:
+        normalized_app_id = str(app_id).strip()
+        if not normalized_app_id:
+            raise ValueError("app_id is required")
+        payload = self._ensure_ok(
+            self.session.get(
+                f"{BASE}/store-dev-app/app/{normalized_app_id}/history",
+                params={"pageNum": page_num, "pageSize": page_size},
+                timeout=REQUEST_TIMEOUT,
+            ),
+            "get_app_history",
+        )
+        return _normalize_paged_rows_payload(payload, "get_app_history")
+
+    def get_app_audit_status(self, detail_id: str) -> dict:
+        normalized_detail_id = str(detail_id).strip()
+        if not normalized_detail_id:
+            raise ValueError("detail_id is required")
+        payload = self._ensure_ok(
+            self.session.get(
+                f"{BASE}/store-dev-app/app/{normalized_detail_id}/audit_status",
+                timeout=REQUEST_TIMEOUT,
+            ),
+            "get_app_audit_status",
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("datas"), dict):
+            raise AppStoreProtocolError(f"get_app_audit_status returned unexpected payload: {payload}")
+        return payload["datas"]
 
     def find_apps_by_pkg_name(self, pkg_name: str) -> list[dict]:
         normalized = pkg_name.strip()

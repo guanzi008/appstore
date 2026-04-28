@@ -28,6 +28,8 @@ class ReleaseRecord:
     execution_mode: str = ""
     region: str = ""
     note: str = ""
+    cpu_clip_codes: tuple[str, ...] | None = None
+    motherboard_codes: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class TargetRecord:
     baseline_id: str = ""
     unsupport_baseline_ids: tuple[str, ...] = ()
     target_note: str = ""
+    baseline_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,13 @@ class BaselineOption:
 
 
 @dataclass(frozen=True)
+class StoreAdaptOption:
+    code: str
+    label: str
+    remark: str = ""
+
+
+@dataclass(frozen=True)
 class SystemTemplate:
     column_prefix: str
     package_family: str
@@ -85,6 +95,9 @@ class CapabilityCache:
     deb_system_lines: dict[str, SystemLine]
     linglong_system_lines: dict[str, SystemLine]
     baseline_options: dict[str, tuple[BaselineOption, ...]]
+    arch_options: dict[str, StoreAdaptOption] = field(default_factory=dict)
+    cpu_clip_options: dict[str, StoreAdaptOption] = field(default_factory=dict)
+    motherboard_options: dict[str, StoreAdaptOption] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, init=False)

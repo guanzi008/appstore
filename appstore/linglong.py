@@ -13,6 +13,11 @@ class LinglongParseError(RuntimeError):
     pass
 
 
+NATIVE_LAYER_MAGIC = b"<<< deepin linglong layer archive >>>"
+NATIVE_LAYER_METADATA_PREFIX_SIZE = len(NATIVE_LAYER_MAGIC) + 7
+MAX_NATIVE_LAYER_METADATA_SIZE = 16 * 1024 * 1024
+
+
 def _hash_package_file(package_path: Path) -> tuple[int, str]:
     digest = hashlib.sha256()
     size = package_path.stat().st_size
@@ -67,7 +72,7 @@ def _read_linglong_metadata(package_path: Path | str) -> dict[str, object]:
         with tarfile.open(package_path) as archive:
             candidate_members = _candidate_metadata_members([member.name for member in archive.getmembers()])
     else:
-        raise LinglongParseError(f"unsupported linglong package format: {package_path}")
+        return _read_native_layer_metadata(package_path)
 
     if not candidate_members:
         raise LinglongParseError(f"missing Linglong metadata in {package_path}")
@@ -84,9 +89,46 @@ def _read_linglong_metadata(package_path: Path | str) -> dict[str, object]:
     return metadata
 
 
+def _read_native_layer_metadata(package_path: Path) -> dict[str, object]:
+    metadata_size = _read_native_layer_metadata_size(package_path)
+    with package_path.open("rb") as package_file:
+        package_file.seek(NATIVE_LAYER_METADATA_PREFIX_SIZE)
+        raw_metadata = package_file.read(metadata_size)
+        if len(raw_metadata) != metadata_size:
+            raise LinglongParseError(f"failed to parse Linglong metadata for {package_path}")
+
+    try:
+        metadata = json.loads(raw_metadata.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LinglongParseError(f"failed to parse Linglong metadata for {package_path}") from exc
+    if not isinstance(metadata, dict):
+        raise LinglongParseError(f"failed to parse Linglong metadata for {package_path}")
+    return metadata
+
+
+def _read_native_layer_metadata_size(package_path: Path) -> int:
+    with package_path.open("rb") as package_file:
+        prefix = package_file.read(NATIVE_LAYER_METADATA_PREFIX_SIZE)
+        if not prefix.startswith(NATIVE_LAYER_MAGIC) or len(prefix) < NATIVE_LAYER_METADATA_PREFIX_SIZE:
+            raise LinglongParseError(f"unsupported linglong package format: {package_path}")
+
+        metadata_size = int.from_bytes(prefix[-4:], byteorder="little", signed=False)
+        if metadata_size <= 0 or metadata_size > MAX_NATIVE_LAYER_METADATA_SIZE:
+            raise LinglongParseError(f"malformed Linglong metadata in {package_path}")
+        return metadata_size
+
+
+def native_layer_payload_offset(package_path: Path | str) -> int:
+    package_path = Path(package_path)
+    return NATIVE_LAYER_METADATA_PREFIX_SIZE + _read_native_layer_metadata_size(package_path)
+
+
 def _read_app_layer(metadata: dict[str, object], package_path: Path) -> dict[str, object]:
     layers = metadata.get("layers")
     if not isinstance(layers, list):
+        info = metadata.get("info")
+        if isinstance(info, dict) and str(info.get("kind", "")).strip().lower() == "app":
+            return info
         raise LinglongParseError(f"missing application layer in {package_path}")
 
     app_layers: list[dict[str, object]] = []
@@ -149,3 +191,7 @@ def read_uab_package_info(package_path: Path | str) -> PackageInfo:
 
 def read_layer_package_info(package_path: Path | str) -> PackageInfo:
     return _build_package_info(package_path, package_format="layer")
+
+
+def read_linglong_metadata(package_path: Path | str) -> dict[str, object]:
+    return _read_linglong_metadata(package_path)

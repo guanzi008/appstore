@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "appstore-uploader": {
+      "command": "<APPSTORE_REPO_ROOT>/scripts/appstore-mcp",
+      "descriptions": {
+        "generic": "deepin/UOS 应用商店批量提审、更新、自动截图上传工具"
+      },
+      "env": {
+        "APPSTORE_USERNAME": "<APPSTORE_USERNAME>",
+        "APPSTORE_PASSWORD": "<APPSTORE_PASSWORD>",
+        "APPSTORE_MCP_CACHE_DIR": "<APPSTORE_REPO_ROOT>/appstore/cache/capabilities",
+        "APPSTORE_AI_BASE_URL": "http://127.0.0.1:8787/v1",
+        "APPSTORE_AI_MODEL": "openai-codex/gpt-5.4",
+        "APPSTORE_AI_API_KEY": "<APPSTORE_AI_API_KEY>",
+        "APPSTORE_SUDO_PASSWORD": "<SUDO_PASSWORD>",
+        "APPSTORE_OCR_PYTHON": "<APPSTORE_REPO_ROOT>/.venv-ocr/bin/python3"
+      }
+    }
+  }
+}

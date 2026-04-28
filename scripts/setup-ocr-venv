@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+VENV_DIR="$REPO_ROOT/.venv-ocr"
+
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/python3" -m pip install --upgrade pip
+"$VENV_DIR/bin/python3" -m pip install rapidocr_onnxruntime
+
+echo "OCR venv ready: $VENV_DIR"
+echo "Python: $VENV_DIR/bin/python3"

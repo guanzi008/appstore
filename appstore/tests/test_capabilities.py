@@ -4,13 +4,14 @@ from tempfile import TemporaryDirectory
 
 from appstore.capabilities import (
     load_capability_cache,
+    normalize_adapt_options,
     normalize_baseline_options,
     normalize_deb_system_lines,
     normalize_linglong_system_lines,
     sync_capabilities_to_cache,
     write_capability_cache,
 )
-from appstore.models import BaselineOption, CapabilityCache, SystemLine
+from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
 
 
 class CapabilityCacheTests(unittest.TestCase):
@@ -23,6 +24,9 @@ class CapabilityCacheTests(unittest.TestCase):
                 "deb:11": (BaselineOption(system_line_code="11", baseline_id="2300", minor_version="23.0.0"),),
                 "linglong:21": (BaselineOption(system_line_code="21", baseline_id="2500", minor_version="25.0.0"),),
             },
+            arch_options={"4": StoreAdaptOption(code="4", label="x86")},
+            cpu_clip_options={"0": StoreAdaptOption(code="0", label="其他cpu")},
+            motherboard_options={"1": StoreAdaptOption(code="1", label="青松")},
         )
 
         with TemporaryDirectory() as tmpdir:
@@ -62,6 +66,21 @@ class CapabilityCacheTests(unittest.TestCase):
         self.assertEqual(sorted(cache.keys()), ["11", "21"])
         self.assertEqual(cache["21"], SystemLine(code="21", label="communityV25", family="deb"))
 
+    def test_normalize_deb_system_lines_supports_modern_system_platform_key(self) -> None:
+        adapt_info = {
+            "datas": {
+                "system_platform": [
+                    {"code": 11, "name": "社区版V23"},
+                    {"code": 21, "name": "社区版V25"},
+                ]
+            }
+        }
+
+        cache = normalize_deb_system_lines(adapt_info)
+
+        self.assertEqual(sorted(cache.keys()), ["11", "21"])
+        self.assertEqual(cache["11"], SystemLine(code="11", label="社区版V23", family="deb"))
+
     def test_normalize_baseline_options_groups_by_family_and_system_line(self) -> None:
         adapt_info = {
             "datas": {
@@ -78,6 +97,40 @@ class CapabilityCacheTests(unittest.TestCase):
         self.assertEqual(
             cache["linglong:21"][0],
             BaselineOption(system_line_code="21", baseline_id="2500", minor_version="25.0.0"),
+        )
+
+    def test_normalize_baseline_options_supports_modern_baseline_key(self) -> None:
+        adapt_info = {
+            "datas": {
+                "baseline": [
+                    {"system_platform": 11, "id": "2300", "minor_version": "23.0.0"},
+                ]
+            }
+        }
+
+        cache = normalize_baseline_options(adapt_info)
+
+        self.assertEqual(cache["deb:11"][0], BaselineOption(system_line_code="11", baseline_id="2300", minor_version="23.0.0"))
+        self.assertEqual(cache["linglong:11"][0], BaselineOption(system_line_code="11", baseline_id="2300", minor_version="23.0.0"))
+
+    def test_normalize_adapt_options_reads_cpu_and_motherboard_rows(self) -> None:
+        adapt_info = {
+            "datas": {
+                "cpu_clip": [
+                    {"code": 0, "name": "其他cpu", "remark": None},
+                    {"code": 3, "name": "FT2000", "remark": "phytium"},
+                ],
+                "motherboard": [{"code": 1, "name": "青松"}],
+            }
+        }
+
+        self.assertEqual(
+            normalize_adapt_options(adapt_info, "cpu_clip")["3"],
+            StoreAdaptOption(code="3", label="FT2000", remark="phytium"),
+        )
+        self.assertEqual(
+            normalize_adapt_options(adapt_info, "motherboard")["1"],
+            StoreAdaptOption(code="1", label="青松"),
         )
 
     def test_sync_capabilities_to_cache_writes_latest_json(self) -> None:
@@ -97,6 +150,9 @@ class CapabilityCacheTests(unittest.TestCase):
                         "shopVersionList": [
                             {"pkgInstallMode": 1, "system_platform": "11", "id": "2300", "minor_version": "23.0.0"}
                         ],
+                        "arch": [{"code": 4, "name": "x86"}],
+                        "cpu_clip": [{"code": 0, "name": "其他cpu"}],
+                        "motherboard": [{"code": 1, "name": "青松"}],
                     }
                 }
 
@@ -107,6 +163,40 @@ class CapabilityCacheTests(unittest.TestCase):
             loaded = load_capability_cache(latest_path)
 
         self.assertEqual(loaded.deb_system_lines["11"].label, "communityV23")
+        self.assertEqual(loaded.arch_options["4"].label, "x86")
+        self.assertEqual(loaded.cpu_clip_options["0"].label, "其他cpu")
+        self.assertEqual(loaded.motherboard_options["1"].label, "青松")
+
+    def test_sync_capabilities_to_cache_supports_modern_deb_system_platform_key(self) -> None:
+        class FakeClient:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def fetch_linglong_system_lines(self) -> list[dict]:
+                self.calls.append("linglong")
+                return [{"dictLabel": "communityV23", "dictValue": "11"}]
+
+            def fetch_adapt_info(self) -> dict:
+                self.calls.append("adapt")
+                return {
+                    "datas": {
+                        "system_platform": [{"code": 11, "name": "社区版V23"}],
+                        "baseline": [{"id": "1", "system_platform": 11, "minor_version": "2300"}],
+                        "arch": [{"code": 4, "name": "x86"}],
+                        "cpu_clip": [{"code": 0, "name": "其他cpu"}],
+                        "motherboard": [{"code": 1, "name": "青松"}],
+                    }
+                }
+
+        with TemporaryDirectory() as tmpdir:
+            client = FakeClient()
+            latest_path = sync_capabilities_to_cache(client, Path(tmpdir))
+            loaded = load_capability_cache(latest_path)
+
+        self.assertEqual(client.calls, ["linglong", "adapt"])
+        self.assertEqual(loaded.deb_system_lines["11"].label, "社区版V23")
+        self.assertEqual(loaded.baseline_options["deb:11"][0].baseline_id, "1")
+        self.assertEqual(loaded.baseline_options["linglong:11"][0].baseline_id, "1")
 
 
 if __name__ == "__main__":

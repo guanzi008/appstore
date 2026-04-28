@@ -36,6 +36,21 @@ class SessionStateStore:
         payload.setdefault("last_verified_at", "")
         return BrowserSessionState(**payload)
 
+    def list_accounts(self) -> tuple[str, ...]:
+        if not self.base_dir.exists():
+            return ()
+        entries: list[tuple[float, str]] = []
+        for path in self.base_dir.glob("*.json"):
+            if not path.is_file():
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            entries.append((mtime, path.stem))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        return tuple(name for _mtime, name in entries)
+
     def save(self, state: BrowserSessionState) -> Path:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         path = self._path_for(state.account)

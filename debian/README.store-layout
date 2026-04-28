@@ -1,0 +1,21 @@
+# deepin/UOS Store Layout
+
+This package intentionally installs the application under:
+
+```text
+/opt/apps/com.uniontech.utpublisher/
+```
+
+Expected payload:
+
+```text
+entries/applications/com.uniontech.utpublisher.desktop
+entries/icons/hicolor/scalable/apps/com.uniontech.utpublisher.svg
+files/bin/utpublisher-qt-cpp
+files/share/com.uniontech.utpublisher/{appstore,ui,openGA}
+info
+```
+
+The Qt launcher sets Python backend cache, session, preferences, output, and
+manual asset paths to XDG user locations at runtime. The installed tree under
+`/opt/apps` is treated as read-only application payload.

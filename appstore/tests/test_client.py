@@ -288,6 +288,135 @@ class ClientDecisionTests(unittest.TestCase):
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "old-pkg")
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][1]["file_save_key"], "pkg-key")
 
+    def test_build_submit_payload_replaces_existing_screenshots_when_provided(self) -> None:
+        detail = {
+            "app_basic_info": {"category_id": 9, "website": "https://existing.example/app", "region": "1"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN",
+                    "name": "旧应用名",
+                    "brief_info": "旧简介",
+                    "desc_info": "旧详情",
+                    "update_desc": "旧更新说明",
+                    "icon_save_key": "existing-icon",
+                    "appScreenShotList": [
+                        {"screen_shot_key": "existing-shot-1", "image_mode": 1, "sort": 0},
+                    ],
+                }
+            ],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": None,
+            },
+            "app_origin_pkgs": [],
+        }
+        release = self._release(note="替换截图")
+
+        payload = build_submit_payload(
+            app=self.app,
+            release=release,
+            package_info=self.package,
+            uploads={
+                "package": self.uploads["package"],
+                "screenshots": (
+                    UploadedFileRef(kind="image", file_save_key="new-shot-1", size=10, file_hash="hash-1"),
+                    UploadedFileRef(kind="image", file_save_key="new-shot-2", size=11, file_hash="hash-2"),
+                    UploadedFileRef(kind="image", file_save_key="new-shot-3", size=12, file_hash="hash-3"),
+                ),
+            },
+            target_app_id="1096227",
+            existing_app_detail=detail,
+        )
+
+        lan_info = payload["app_info"]["app_lan_infos"][0]
+        self.assertEqual(
+            [shot["screen_shot_key"] for shot in lan_info["appScreenShotList"]],
+            ["new-shot-1", "new-shot-2", "new-shot-3"],
+        )
+        self.assertEqual(lan_info["icon_save_key"], "existing-icon")
+
+    def test_build_submit_payload_applies_existing_app_overrides_when_provided(self) -> None:
+        detail = {
+            "app_basic_info": {"category_id": 9, "website": "https://existing.example/app", "region": "1", "default_lan": "zh_CN"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN",
+                    "name": "旧应用名",
+                    "brief_info": "旧简介",
+                    "desc_info": "旧详情",
+                    "update_desc": "旧更新说明",
+                    "icon_save_key": "existing-icon",
+                    "appScreenShotList": [
+                        {"screen_shot_key": "existing-shot-1", "image_mode": 1, "sort": 0},
+                    ],
+                }
+            ],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": None,
+            },
+            "app_origin_pkgs": [],
+        }
+        release = self._release(note="改基础信息")
+
+        payload = build_submit_payload(
+            app=self.app,
+            release=release,
+            package_info=self.package,
+            uploads={"package": self.uploads["package"]},
+            target_app_id="1096227",
+            existing_app_detail=detail,
+            existing_app_overrides={
+                "app_name_zh": "新应用名",
+                "short_desc_zh": "新简介",
+                "full_desc_zh": "新详情",
+                "category_id": 2,
+                "website": "https://override.example/app",
+            },
+        )
+
+        lan_info = payload["app_info"]["app_lan_infos"][0]
+        self.assertEqual(lan_info["name"], "新应用名")
+        self.assertEqual(lan_info["brief_info"], "新简介")
+        self.assertEqual(lan_info["desc_info"], "新详情")
+        self.assertEqual(payload["app_info"]["app_basic_info"]["category_id"], 2)
+        self.assertEqual(payload["app_info"]["app_basic_info"]["website"], "https://override.example/app")
+
+    def test_build_submit_payload_builds_multilingual_copy_for_other_regions(self) -> None:
+        release = self._release(region="1")
+
+        payload = build_submit_payload(
+            app=self.app,
+            release=release,
+            package_info=self.package,
+            uploads=self.uploads,
+            target_app_id="1096227",
+            localized_lan_texts={
+                "zh_CN": {
+                    "name": "LabelNova",
+                    "brief_info": "简短介绍",
+                    "desc_info": "详细介绍",
+                    "update_desc": "",
+                },
+                "en_US": {
+                    "name": "LabelNova",
+                    "brief_info": "Brief intro",
+                    "desc_info": "Full description",
+                    "update_desc": "",
+                },
+            },
+            desired_lans=("zh_CN", "en_US"),
+        )
+
+        self.assertEqual([item["lan"] for item in payload["app_info"]["app_lan_infos"]], ["zh_CN", "en_US"])
+        self.assertEqual(payload["app_info"]["app_lan_infos"][1]["brief_info"], "Brief intro")
+
 
 class ClientSessionTests(unittest.TestCase):
     def test_ensure_ok_includes_error_payload_for_http_failures(self) -> None:

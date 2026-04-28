@@ -1,0 +1,32 @@
+Source: com.uniontech.utpublisher
+Section: utils
+Priority: optional
+Maintainer: UnionTech App Store Tooling <maintainers@example.invalid>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ pkg-config,
+ qt6-base-dev,
+ qt6-base-dev-tools,
+ libdtk6widget-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: com.uniontech.utpublisher
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ python3,
+ python3-openpyxl,
+ python3-requests,
+ python3-pyppeteer,
+ python3-pyside6 | python3-pyqt6 | python3-pyqt5,
+ xdotool,
+ scrot,
+ xvfb,
+ xauth
+Description: deepin/UOS app store publishing tool
+ UTPublisher is a Qt desktop tool for preparing and submitting application
+ metadata, packages, screenshots, and compatibility ranges to the deepin/UOS
+ application store.

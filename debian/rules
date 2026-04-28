@@ -1,0 +1,36 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/architecture.mk
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+APPID = com.uniontech.utpublisher
+APP_ROOT = /opt/apps/$(APPID)
+RUNTIME_REPO_ROOT = $(APP_ROOT)/files/share/$(APPID)
+
+%:
+	dh $@ --buildsystem=cmake --sourcedirectory=Qt-C++
+
+override_dh_auto_configure:
+	dh_auto_configure --buildsystem=cmake --sourcedirectory=Qt-C++ -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/ \
+		-DAPPSTORE_APPID=$(APPID) \
+		-DAPPSTORE_RUNTIME_REPO_ROOT=$(RUNTIME_REPO_ROOT) \
+		-DAPPSTORE_INFO_VERSION=0.1.0.1 \
+		-DAPPSTORE_INFO_ARCH=$(DEB_HOST_ARCH)
+
+override_dh_installdocs:
+	:
+
+override_dh_installchangelogs:
+	:
+
+override_dh_installsystemd:
+	:
+
+override_dh_installsystemduser:
+	:
+
+override_dh_missing:
+	dh_missing --fail-missing

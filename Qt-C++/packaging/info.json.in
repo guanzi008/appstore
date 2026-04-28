@@ -1,0 +1,7 @@
+{
+  "appid": "@APPSTORE_APPID@",
+  "name": "UTPublisher",
+  "version": "@APPSTORE_INFO_VERSION@",
+  "arch": "@APPSTORE_INFO_ARCH@",
+  "permissions": {}
+}

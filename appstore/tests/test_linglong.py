@@ -10,11 +10,19 @@ from appstore.linglong import LinglongParseError, read_layer_package_info, read_
 from appstore.models import PackageInfo, PackageRecord
 
 
+NATIVE_LAYER_MAGIC = b"<<< deepin linglong layer archive >>>"
+
+
 def _write_linglong_archive(path: Path, layers: list[dict], extra_members: dict[str, str] | None = None) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("info.json", json.dumps({"layers": layers}))
         for member_name, content in (extra_members or {}).items():
             archive.writestr(member_name, content)
+
+
+def _write_native_layer(path: Path, info: dict) -> None:
+    payload = json.dumps({"info": info, "version": "1"}).encode("utf-8")
+    path.write_bytes(NATIVE_LAYER_MAGIC + b"\0\0\0" + len(payload).to_bytes(4, "little") + payload + b"...entries")
 
 
 class LinglongPackageInfoTests(unittest.TestCase):
@@ -77,6 +85,28 @@ class LinglongPackageInfoTests(unittest.TestCase):
 
             self.assertEqual(package_info.pkg_name, "org.deepin.demo")
             self.assertEqual(package_info.package_family, "linglong")
+            self.assertEqual(package_info.package_format, "layer")
+
+    def test_read_layer_package_info_reads_native_layer_header_metadata(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            package_path = Path(tmpdir) / "native.layer"
+            _write_native_layer(
+                package_path,
+                {
+                    "kind": "app",
+                    "id": "net.deepin.native",
+                    "version": "1.2.3",
+                    "arch": ["x86_64"],
+                    "name": "Native Layer",
+                    "description": "Native linglong layer archive",
+                },
+            )
+
+            package_info = read_layer_package_info(package_path)
+
+            self.assertEqual(package_info.pkg_name, "net.deepin.native")
+            self.assertEqual(package_info.pkg_version, "1.2.3")
+            self.assertEqual(package_info.pkg_arch, "x86_64")
             self.assertEqual(package_info.package_format, "layer")
 
     def test_read_linglong_package_info_rejects_malformed_metadata(self) -> None:
