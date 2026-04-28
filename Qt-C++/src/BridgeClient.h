@@ -18,6 +18,8 @@ public:
 
     [[nodiscard]] bool isBusy() const;
     void callAsync(const QString &command, const QJsonObject &payload, int timeoutMs = 600000);
+    static void configureProcess(QProcess *process, const QString &repoRoot, const QString &command);
+    static QJsonDocument parseEnvelopeDocument(const QByteArray &stdoutData, QJsonParseError *parseError);
 
 signals:
     void commandStarted(const QString &command);
@@ -27,8 +29,6 @@ signals:
 private:
     void finishProcess(int exitCode, QProcess::ExitStatus exitStatus);
     void cleanupProcess();
-    static QJsonDocument parseEnvelopeDocument(const QByteArray &stdoutData, QJsonParseError *parseError);
-
     QString m_repoRoot;
     QString m_currentCommand;
     QProcess *m_process = nullptr;

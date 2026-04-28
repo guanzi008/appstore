@@ -1225,38 +1225,27 @@ def command_login_credentials(payload: dict) -> dict:
     }
 
 
-def command_login_wechat_qr(payload: dict) -> dict:
-    from ui.qt_compat import QtWidgets
-    from ui.wechat_qr_login import WechatQrLoginDialog
+def command_login_wechat_qr_stream(payload: dict) -> dict:
+    from ui.wechat_qr_backend import run_wechat_qr_login
 
     account_label = str(payload.get("account_label", "")).strip() or "manual-login"
-    app = QtWidgets.QApplication.instance()
-    owns_app = app is None
-    if app is None:
-        app = QtWidgets.QApplication([sys.argv[0]])
-    dialog = WechatQrLoginDialog(account_label)
-    try:
-        state = dialog.open_and_capture()
-    finally:
-        dialog.deleteLater()
-    if state is None:
-        return {
-            "canceled": True,
-            "login": _login_to_json(None),
-            "capabilities": _capability_cache_to_json(None),
-            "categories": [],
-        }
+
+    def emit_event(event: dict) -> None:
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+
+    state = run_wechat_qr_login(account_label, event_callback=emit_event)
     login_context = login_with_browser_state(state)
     capability_cache = _load_capabilities(login_context)
-    result = {
+    return {
         "canceled": False,
         "login": _login_to_json(login_context),
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": _load_categories(login_context),
     }
-    if owns_app:
-        app.quit()
-    return result
+
+
+def command_login_wechat_qr(payload: dict) -> dict:
+    return command_login_wechat_qr_stream(payload)
 
 
 def command_logout(payload: dict) -> dict:
@@ -1596,6 +1585,7 @@ COMMANDS = {
     "save_preferences": command_save_preferences,
     "login_credentials": command_login_credentials,
     "login_wechat_qr": command_login_wechat_qr,
+    "login_wechat_qr_stream": command_login_wechat_qr_stream,
     "logout": command_logout,
     "sync_store_data": command_sync_store_data,
     "analyze": command_analyze,

@@ -4,6 +4,7 @@
 #include "ui/AppTheme.h"
 #include "ui/LoginDialog.h"
 #include "ui/MetadataPanel.h"
+#include "ui/QrLoginDialog.h"
 #include "ui/ScreenshotPanel.h"
 #include "ui/SidebarWidget.h"
 #include "ui/TargetMatrixPanel.h"
@@ -972,8 +973,31 @@ void MainWindow::loginByWechat()
         return;
     }
 
-    payload.insert(QStringLiteral("account_label"), m_preferredAccount);
-    runBridgeCommand(QStringLiteral("login_wechat_qr"), payload, 600000);
+    if (m_bridge->isBusy()) {
+        QMessageBox::information(this, QStringLiteral("后端忙碌"), QStringLiteral("当前后端任务尚未结束。"));
+        return;
+    }
+
+    m_sidebar->setTaskState(QStringLiteral("login"), QStringLiteral("running"), QStringLiteral("等待扫码"));
+    m_workflowBar->setBusy(true);
+    m_workflowBar->setStatusText(QStringLiteral("请在弹窗中使用微信扫码登录。"));
+    QrLoginDialog qrDialog(QStringLiteral(APPSTORE_REPO_ROOT), m_preferredAccount, this);
+    if (qrDialog.exec() != QDialog::Accepted) {
+        m_workflowBar->setBusy(false);
+        m_sidebar->setTaskState(QStringLiteral("login"), QStringLiteral("failed"), QStringLiteral("已取消"));
+        m_workflowBar->setStatusText(QStringLiteral("扫码登录已取消。"));
+        return;
+    }
+
+    const QJsonObject data = qrDialog.resultData();
+    m_workflowBar->setBusy(false);
+    applySessionData(data);
+    appendLogs(data.value(QStringLiteral("logs")).toArray());
+    m_sidebar->setTaskState(QStringLiteral("login"), QStringLiteral("done"), QStringLiteral("会话有效"));
+    m_workflowBar->setStatusText(QStringLiteral("登录成功，会话已保存。"));
+    if (data.value(QStringLiteral("login")).toObject().value(QStringLiteral("logged_in")).toBool(false)) {
+        listMyApps();
+    }
 }
 
 void MainWindow::logout()

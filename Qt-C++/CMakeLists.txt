@@ -38,6 +38,7 @@ qt_add_executable(utpublisher-qt-cpp
     src/ui/AppTheme.cpp
     src/ui/LoginDialog.cpp
     src/ui/MetadataPanel.cpp
+    src/ui/QrLoginDialog.cpp
     src/ui/ScreenshotPanel.cpp
     src/ui/SidebarWidget.cpp
     src/ui/TargetMatrixPanel.cpp

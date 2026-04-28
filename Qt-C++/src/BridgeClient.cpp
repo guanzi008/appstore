@@ -20,36 +20,29 @@ bool BridgeClient::isBusy() const
     return m_process != nullptr;
 }
 
-void BridgeClient::callAsync(const QString &command, const QJsonObject &payload, int timeoutMs)
+void BridgeClient::configureProcess(QProcess *process, const QString &repoRoot, const QString &command)
 {
-    if (m_process != nullptr) {
-        emit commandFailed(command, tr("另一个后端任务正在执行，请稍后再试。"), {});
-        return;
-    }
-
-    m_currentCommand = command;
-    m_process = new QProcess(this);
-    const QString packagedBackend = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../bin/utpublisher-python-backend")));
-    const QString devVenvPython = m_repoRoot + QStringLiteral("/.venv/bin/python");
+    const QString packagedBackend = QDir::cleanPath(QDir(repoRoot).filePath(QStringLiteral("../../bin/utpublisher-python-backend")));
+    const QString devVenvPython = repoRoot + QStringLiteral("/.venv/bin/python");
     const bool usePackagedBackend = QFileInfo::exists(packagedBackend);
     if (usePackagedBackend) {
-        m_process->setProgram(packagedBackend);
-        m_process->setArguments({command});
+        process->setProgram(packagedBackend);
+        process->setArguments({command});
     } else {
         const QString pythonProgram = QFileInfo::exists(devVenvPython) ? devVenvPython : QStringLiteral("python3");
-        m_process->setProgram(pythonProgram);
-        m_process->setArguments({QStringLiteral("-m"), QStringLiteral("ui.cpp_bridge"), command});
+        process->setProgram(pythonProgram);
+        process->setArguments({QStringLiteral("-m"), QStringLiteral("ui.cpp_bridge"), command});
     }
-    m_process->setWorkingDirectory(m_repoRoot);
+    process->setWorkingDirectory(repoRoot);
 
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     const QString oldPythonPath = environment.value(QStringLiteral("PYTHONPATH"));
-    const QString bytecodeRoot = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../lib/python-bytecode")));
+    const QString bytecodeRoot = QDir::cleanPath(QDir(repoRoot).filePath(QStringLiteral("../../lib/python-bytecode")));
     QStringList pythonPathEntries;
     if (QFileInfo::exists(bytecodeRoot) && QFileInfo(bytecodeRoot).isDir()) {
         pythonPathEntries.append(bytecodeRoot);
     }
-    pythonPathEntries.append(m_repoRoot);
+    pythonPathEntries.append(repoRoot);
     if (!usePackagedBackend && !oldPythonPath.isEmpty()) {
         pythonPathEntries.append(oldPythonPath);
     }
@@ -60,7 +53,7 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
         environment.insert(QStringLiteral("UTPUBLISHER_PYTHON_BYTECODE_ROOT"), bytecodeRoot);
         environment.insert(
             QStringLiteral("UTPUBLISHER_PYTHON_RUNTIME_ROOT"),
-            QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../python-runtime")))
+            QDir::cleanPath(QDir(repoRoot).filePath(QStringLiteral("../../python-runtime")))
         );
     }
     const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -73,7 +66,19 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
         environment.insert(QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"), dataDir.filePath(QStringLiteral("preferences.json")));
         environment.insert(QStringLiteral("UTPUBLISHER_WEBENGINE_CACHE_DIR"), dataDir.filePath(QStringLiteral("webengine")));
     }
-    m_process->setProcessEnvironment(environment);
+    process->setProcessEnvironment(environment);
+}
+
+void BridgeClient::callAsync(const QString &command, const QJsonObject &payload, int timeoutMs)
+{
+    if (m_process != nullptr) {
+        emit commandFailed(command, tr("另一个后端任务正在执行，请稍后再试。"), {});
+        return;
+    }
+
+    m_currentCommand = command;
+    m_process = new QProcess(this);
+    configureProcess(m_process, m_repoRoot, command);
 
     const QByteArray input = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
