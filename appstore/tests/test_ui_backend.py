@@ -14,6 +14,7 @@ from ui.backend import (
     StoreAppMatch,
     SystemTargetOption,
     _build_localized_lan_texts,
+    _submit_grouped_release,
     build_existing_detail_editor_defaults,
     build_target_options,
     capture_screenshots_for_group,
@@ -25,7 +26,12 @@ from ui.backend import (
 )
 from ui.package_meta import PackageGroup, PackageMetadata
 from ui.preferences import PreferenceStore, UIPreferences
-from ui.cpp_bridge import _online_group_from_detail, _sync_existing_detail_assets
+from ui.cpp_bridge import (
+    _group_payload_to_package_group,
+    _group_payload_to_targets,
+    _online_group_from_detail,
+    _sync_existing_detail_assets,
+)
 
 
 class _CredentialClient:
@@ -57,6 +63,18 @@ class _InvalidCachedClient:
 
     def fetch_dev_info(self):
         raise RuntimeError("expired")
+
+
+class _NoUploadSubmitClient:
+    def __init__(self) -> None:
+        self.payload = None
+
+    def upload_file_bytes(self, **_kwargs):
+        raise AssertionError("online-only updates must not upload package files")
+
+    def submit_payload(self, payload: dict):
+        self.payload = payload
+        return {"ok": True, "datas": {"app_id": "42"}}
 
 
 class UiBackendCacheTests(unittest.TestCase):
@@ -226,6 +244,12 @@ class UiCppBridgeOnlineDetailTests(unittest.TestCase):
         }
         self.assertTrue(any(target["code"] == "11" and target["selected"] for target in targets_by_package[packages[0]["path"]]))
         self.assertTrue(any(target["code"] == "21" and target["selected"] for target in targets_by_package[packages[1]["path"]]))
+
+        package_group = _group_payload_to_package_group(group)
+        submit_targets = _group_payload_to_targets(group)
+        self.assertEqual(len(package_group.packages), 2)
+        self.assertTrue(str(package_group.packages[0].path).startswith("online/"))
+        self.assertEqual(submit_targets[0].package_path, str(package_group.packages[0].path))
 
     def test_sync_existing_detail_assets_preserves_store_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -582,6 +606,99 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
 
         self.assertEqual(submit_mock.call_args.kwargs["assets"].icon_path, icon_path)
         self.assertEqual(len(submit_mock.call_args.kwargs["assets"].screenshot_paths), 3)
+
+    def test_submit_grouped_release_reuses_online_package_without_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            package_path = Path("online/42/0/demo/1.0.0/x86")
+            package_group = PackageGroup(
+                packages=(
+                    PackageMetadata(
+                        path=package_path,
+                        package_family="deb",
+                        package_format="deb",
+                        pkg_name="demo",
+                        pkg_version="1.0.0",
+                        pkg_arch="amd64",
+                        pkg_size=10,
+                        sha256="old-hash",
+                        display_name="Demo",
+                        short_description="short",
+                        full_description="full",
+                        homepage="https://example.com",
+                    ),
+                )
+            )
+            client = _NoUploadSubmitClient()
+            login = LoginContext(
+                client=client,
+                account_label="odatacc",
+                session_state_path=None,
+                login_mode="cached",
+                can_use_browser_mode=False,
+            )
+            cache = CapabilityCache(
+                generated_at="2026-04-27T18:00:00+08:00",
+                deb_system_lines={"21": SystemLine(code="21", label="专业版V25", family="deb")},
+                linglong_system_lines={},
+                baseline_options={
+                    "deb:21": (BaselineOption(system_line_code="21", baseline_id="2500", minor_version="25.0.0"),),
+                },
+            )
+            existing_detail = {
+                "datas": {
+                    "app_basic_info": {"category_id": 1, "website": "https://example.com", "region": "1"},
+                    "app_lan_infos": [{"lan": "zh_CN", "name": "Demo", "brief_info": "short", "desc_info": "full"}],
+                    "app_fit_info": {"system_platform": [{"code": 21}], "arch": [{"code": 4}], "region": [{"code": 1}]},
+                    "app_origin_pkgs": [
+                        {
+                            "pkg_name": "demo",
+                            "pkg_version": "1.0.0",
+                            "pkg_arch": "4",
+                            "pkgArch": "X86",
+                            "pkgType": 11,
+                            "pkg_size": 10,
+                            "sha256": "old-hash",
+                            "file_save_key": "existing-x86",
+                            "progressPercent": 100,
+                            "supSys": "21",
+                            "supBlineVer": "2500",
+                            "systemStr": "专业版V25",
+                        }
+                    ],
+                }
+            }
+
+            result = _submit_grouped_release(
+                login=login,
+                package_group=package_group,
+                cache=cache,
+                app_name_zh="Demo",
+                website="https://example.com",
+                short_desc_zh="short",
+                full_desc_zh="full",
+                keywords_zh="",
+                category_id=1,
+                region_codes=("1",),
+                note="仅更新资料",
+                release_key="stable",
+                pkg_channel="stable",
+                assets=AssetBundle(None, (), None, (), None, ()),
+                selected_targets=(_target_option(package_path, "21", "2500"),),
+                output_dir=temp_root / "out",
+                target_app_id="42",
+                existing_app_detail=existing_detail,
+                existing_app_overrides={"app_name_zh": "Demo"},
+                desired_lans=("zh_CN",),
+                localized_lan_texts={"zh_CN": {"name": "Demo"}},
+                cpu_clip_codes=None,
+                motherboard_codes=None,
+                log=None,
+            )
+
+        self.assertEqual(result.rows[0]["status"], "submitted")
+        self.assertIsNotNone(client.payload)
+        self.assertEqual(client.payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "existing-x86")
 
     def test_submit_applications_batch_new_reuses_prepared_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

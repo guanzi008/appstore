@@ -12,7 +12,7 @@ def compile_tree(project_root: Path, output_root: Path, package_names: list[str]
         if not source_root.exists():
             continue
         for source_path in source_root.rglob("*.py"):
-            if any(part in {"__pycache__", "tests", "examples", "cache", "output"} for part in source_path.parts):
+            if any(part in {"__pycache__", "tests", "cache", "output"} for part in source_path.parts):
                 continue
             relative_path = source_path.relative_to(project_root).with_suffix(".pyc")
             target_path = output_root / relative_path

@@ -220,6 +220,11 @@ QString selectedMatchId(const QJsonObject &group)
     return appId;
 }
 
+bool groupTargetsExistingApp(const QJsonObject &group)
+{
+    return group.value(QStringLiteral("online_only")).toBool(false) || !selectedMatchId(group).isEmpty();
+}
+
 QJsonObject copyEditableOnlineFields(QJsonObject target, const QJsonObject &source)
 {
     static const QStringList alwaysCopyKeys = {
@@ -566,7 +571,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         }
         m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("done"), QStringLiteral("已选择应用"));
         m_workflowBar->setStepStates(StepState::Idle, StepState::Idle, StepState::Idle, StepState::Idle);
-        m_workflowBar->setStatusText(QStringLiteral("已选择我的应用：%1。可修改文案与适配项，拖入新包后提交更新。").arg(appName));
+        m_workflowBar->setStatusText(QStringLiteral("已选择我的应用：%1。可直接提交文案、截图或适配项更新；拖入新包则更新安装包。").arg(appName));
         return;
     }
 
@@ -735,7 +740,7 @@ void MainWindow::renderCurrentGroup()
                               ? QStringLiteral("📦 应用管理 - %1").arg(displayName)
                               : QStringLiteral("📦 应用管理 - 新建版本发布"));
     if (onlineOnly) {
-        m_dropHintLabel->setText(QStringLiteral("已选择我的应用：%1。拖入 .deb / linglong 包后作为新版本更新").arg(displayName));
+        m_dropHintLabel->setText(QStringLiteral("已选择我的应用：%1。可提交资料/截图/适配项更新，拖入新包则更新安装包").arg(displayName));
     } else {
         m_dropHintLabel->setText(hasGroup
                                      ? QStringLiteral("已载入 %1 个包：%2").arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()).arg(AppJson::stringValue(m_currentGroup, QStringLiteral("pkg_name")))
@@ -1157,14 +1162,14 @@ void MainWindow::submitCurrentGroup()
 {
     const QJsonObject group = currentGroupFromUi();
     if (group.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先拖入并解析包文件。"));
+        QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先选择我的应用，或拖入并解析包文件。"));
         return;
     }
-    if (!groupHasPackages(group)) {
+    if (!groupHasPackages(group) && !groupTargetsExistingApp(group)) {
         QMessageBox::information(
             this,
-            QStringLiteral("未选择安装包"),
-            QStringLiteral("已选择我的应用，可先修改文案与适配项；提交新版本前还需要拖入 .deb / linglong 包。"));
+            QStringLiteral("未选择应用"),
+            QStringLiteral("请先选择一个已上架应用，或拖入本地 .deb / linglong 包。"));
         return;
     }
     if (m_preferredAccount.isEmpty()) {

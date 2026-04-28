@@ -41,11 +41,9 @@ from ui.backend import (
     build_target_options,
     package_group_store_arch_codes,
 )
-from ui.package_meta import analyze_package_group, extract_archive_icon, extract_deb_icon
+from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences
 from appstore.session_state import SessionStateStore
-from ui.qt_compat import QtWidgets
-from ui.wechat_qr_login import WechatQrLoginDialog
 
 
 CDN_BASE_URL = "https://app-store-files.uniontech.com/"
@@ -888,6 +886,84 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
     }
 
 
+def _payload_package_path_identity(path_value: str) -> str:
+    normalized = str(path_value or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("online://"):
+        return f"online/{normalized.removeprefix('online://')}"
+    return str(Path(normalized).expanduser().resolve())
+
+
+def _coerce_int(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        return 0
+
+
+def _online_payload_pkg_arch(package_payload: dict) -> str:
+    raw_label = str(package_payload.get("arch", "") or "").strip().lower()
+    raw_code = str(package_payload.get("arch_code", "") or package_payload.get("pkg_arch", "") or "").strip()
+    if raw_label in {"x86", "x86_64", "amd64"} or raw_code == "4":
+        return "amd64"
+    if raw_label in {"arm", "arm64", "aarch64"} or raw_code == "3":
+        return "arm64"
+    if raw_label in {"loong", "loong64", "loongarch64"} or raw_code in {"5", "6"}:
+        return "loong64"
+    if raw_label in {"sw64", "sw_64"} or raw_code == "8":
+        return "sw64"
+    return raw_label or raw_code or "amd64"
+
+
+def _online_package_group_from_payload(group_payload: dict) -> PackageGroup | None:
+    packages: list[PackageMetadata] = []
+    display_name = str(group_payload.get("display_name", "") or group_payload.get("app_name_zh", "")).strip()
+    short_description = str(group_payload.get("short_description", "") or group_payload.get("short_desc_zh", "")).strip()
+    full_description = str(group_payload.get("full_description", "") or group_payload.get("full_desc_zh", "")).strip()
+    homepage = str(group_payload.get("homepage", "") or group_payload.get("website", "")).strip()
+    group_family = str(group_payload.get("package_family", "") or "deb").strip() or "deb"
+    group_format = str(group_payload.get("package_format", "") or ("uab" if group_family == "linglong" else "deb")).strip()
+    for index, package_payload in enumerate(group_payload.get("packages", [])):
+        if not isinstance(package_payload, dict):
+            continue
+        path_value = str(package_payload.get("path", "")).strip()
+        if not path_value.startswith("online://") and not bool(package_payload.get("online", False)):
+            continue
+        package_path = _payload_package_path_identity(path_value or f"online://{index}")
+        pkg_name = str(package_payload.get("pkg_name", "") or group_payload.get("pkg_name", "")).strip()
+        pkg_version = str(package_payload.get("version", "") or package_payload.get("pkg_version", "") or group_payload.get("pkg_version", "")).strip()
+        pkg_arch = _online_payload_pkg_arch(package_payload)
+        package_family = str(package_payload.get("family", "") or group_family).strip() or group_family
+        package_format = str(package_payload.get("format", "") or group_format).strip() or group_format
+        packages.append(
+            PackageMetadata(
+                path=Path(package_path),
+                package_family=package_family,
+                package_format=package_format,
+                pkg_name=pkg_name or display_name or "online-app",
+                pkg_version=pkg_version or "0",
+                pkg_arch=pkg_arch or "amd64",
+                pkg_size=_coerce_int(package_payload.get("pkg_size", package_payload.get("size", 0))),
+                sha256=str(package_payload.get("sha256", "") or "").strip(),
+                display_name=display_name or pkg_name,
+                short_description=short_description,
+                full_description=full_description,
+                homepage=homepage,
+            )
+        )
+    if not packages:
+        return None
+    return PackageGroup(packages=tuple(packages))
+
+
 def _group_payload_to_package_group(group_payload: dict):
     package_paths: list[Path] = []
     for package_payload in group_payload.get("packages", []):
@@ -899,9 +975,12 @@ def _group_payload_to_package_group(group_payload: dict):
         path = Path(path_value).expanduser().resolve()
         if path.exists():
             package_paths.append(path)
-    if not package_paths:
-        raise ValueError("需要先拖入可读取的本地 .deb / linglong 包")
-    return analyze_package_group(package_paths)
+    if package_paths:
+        return analyze_package_group(package_paths)
+    online_group = _online_package_group_from_payload(group_payload)
+    if online_group is not None:
+        return online_group
+    raise ValueError("需要先选择已上架应用，或拖入可读取的本地 .deb / linglong 包")
 
 
 def _group_payload_to_targets(group_payload: dict) -> tuple[SystemTargetOption, ...]:
@@ -922,9 +1001,10 @@ def _group_payload_to_targets(group_payload: dict) -> tuple[SystemTargetOption, 
             for value in target_payload.get("selected_baseline_ids", [])
             if str(value).strip()
         )
+        raw_package_path = str(target_payload.get("package_path", "")).strip()
         result.append(
             SystemTargetOption(
-                package_path=str(target_payload.get("package_path", "")).strip(),
+                package_path=_payload_package_path_identity(raw_package_path),
                 package_label=str(target_payload.get("package_label", "")).strip(),
                 package_arch=str(target_payload.get("package_arch", "")).strip(),
                 code=str(target_payload.get("code", "")).strip(),
@@ -1146,6 +1226,9 @@ def command_login_credentials(payload: dict) -> dict:
 
 
 def command_login_wechat_qr(payload: dict) -> dict:
+    from ui.qt_compat import QtWidgets
+    from ui.wechat_qr_login import WechatQrLoginDialog
+
     account_label = str(payload.get("account_label", "")).strip() or "manual-login"
     app = QtWidgets.QApplication.instance()
     owns_app = app is None

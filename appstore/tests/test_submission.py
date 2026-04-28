@@ -149,6 +149,98 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][1]["file_save_key"], "pkg-arm-key")
         self.assertEqual(payload["app_info"]["app_fit_info"]["arch"], [{"code": 4}, {"code": 3}])
 
+    def test_build_release_payload_reuses_existing_package_without_upload(self) -> None:
+        app = _app()
+        release = ReleaseRecord(
+            row_id=2,
+            app_key="demo",
+            release_key="stable",
+            release_name="稳定版",
+            region="1",
+            note="只更新文案和系统线",
+        )
+        packages = (
+            PackageRecord(
+                20,
+                "demo",
+                "stable",
+                "pkg-online-x86",
+                "deb",
+                "deb",
+                Path("online/42/0/demo/1.0.0/x86"),
+                declared_arch="amd64",
+            ),
+        )
+        inspected = {
+            "pkg-online-x86": PackageInfo("demo", "1.0.0", "amd64", 10, "old-hash", packages[0].file_path),
+        }
+        targets = {
+            "pkg-online-x86": (TargetRecord(30, "demo", "stable", "pkg-online-x86", "21", baseline_id="2500"),),
+        }
+        validated = validate_release_group(app, release, packages, targets, inspected, _cache())
+        existing_detail = {
+            "app_basic_info": {"category_id": 9, "website": "https://existing.example/demo", "region": "1"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN",
+                    "name": "旧名称",
+                    "brief_info": "旧简介",
+                    "desc_info": "旧详情",
+                    "update_desc": "旧更新说明",
+                    "icon_save_key": "existing-icon",
+                    "appScreenShotList": [{"screen_shot_key": "existing-shot-1", "image_mode": 1, "sort": 0}],
+                }
+            ],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": ["2300"],
+            },
+            "app_origin_pkgs": [
+                {
+                    "pkg_name": "demo",
+                    "pkg_version": "1.0.0",
+                    "pkg_arch": "4",
+                    "pkgArch": "X86",
+                    "pkgType": 11,
+                    "pkg_mode": 0,
+                    "pkg_size": 10,
+                    "sha256": "old-hash",
+                    "file_save_key": "existing-x86",
+                    "progressPercent": 100,
+                    "upload_time": "2026-04-24 10:19:33",
+                    "supSys": "11",
+                    "supBlineVer": "2300",
+                    "systemStr": "社区版V23",
+                }
+            ],
+        }
+
+        payload = build_release_payload(
+            validated,
+            uploads_by_package={},
+            app_uploads=None,
+            target_app_id="42",
+            existing_app_detail=existing_detail,
+            existing_app_overrides={
+                "app_name_zh": "新名称",
+                "short_desc_zh": "新简介",
+                "full_desc_zh": "新详情",
+            },
+        )
+
+        origin_pkgs = payload["app_info"]["app_origin_pkgs"]
+        self.assertEqual(len(origin_pkgs), 1)
+        self.assertEqual(origin_pkgs[0]["file_save_key"], "existing-x86")
+        self.assertEqual(origin_pkgs[0]["system_platform"], ["21"])
+        self.assertEqual(origin_pkgs[0]["baseline"], ["2500"])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["system_platform"], [{"code": 21}])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], ["2500"])
+        self.assertEqual(payload["app_info"]["app_lan_infos"][0]["name"], "新名称")
+        self.assertEqual(payload["app_info"]["app_lan_infos"][0]["update_desc"], "只更新文案和系统线")
+
     def test_build_release_payload_carries_cpu_and_motherboard_fit_options(self) -> None:
         app = _app()
         release = ReleaseRecord(

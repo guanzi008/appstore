@@ -7,12 +7,6 @@ from pathlib import Path
 
 from appstore.screenshot_validation import ScreenshotValidationReport, validate_screenshot_paths
 from ui.package_meta import PackageGroup, extract_archive_icon, extract_deb_icon
-from ui.qt_compat import (
-    KEEP_ASPECT_RATIO,
-    QtCore,
-    QtGui,
-    SMOOTH_TRANSFORMATION,
-)
 
 
 MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024
@@ -200,6 +194,7 @@ def _is_image_file(path: Path) -> bool:
 
 
 def _prepare_icon(source: Path, target: Path) -> Path:
+    QtCore, QtGui, keep_aspect_ratio, smooth_transformation = _qt_image_api()
     image = _load_image(source)
     square_size = max(image.width(), image.height(), DEFAULT_ICON_SIZE)
     canvas = QtGui.QImage(
@@ -216,8 +211,8 @@ def _prepare_icon(source: Path, target: Path) -> Path:
     normalized = canvas.scaled(
         DEFAULT_ICON_SIZE,
         DEFAULT_ICON_SIZE,
-        KEEP_ASPECT_RATIO,
-        SMOOTH_TRANSFORMATION,
+        keep_aspect_ratio,
+        smooth_transformation,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     if not normalized.save(str(target), "PNG"):
@@ -226,9 +221,10 @@ def _prepare_icon(source: Path, target: Path) -> Path:
 
 
 def _prepare_screenshot(source: Path, target_base: Path) -> Path:
+    _, _, _, smooth_transformation = _qt_image_api()
     image = _load_image(source)
     if image.width() > DEFAULT_SCREENSHOT_WIDTH:
-        image = image.scaledToWidth(DEFAULT_SCREENSHOT_WIDTH, SMOOTH_TRANSFORMATION)
+        image = image.scaledToWidth(DEFAULT_SCREENSHOT_WIDTH, smooth_transformation)
     png_path = target_base.with_suffix(".png")
     png_path.parent.mkdir(parents=True, exist_ok=True)
     if not image.save(str(png_path), "PNG"):
@@ -244,8 +240,15 @@ def _prepare_screenshot(source: Path, target_base: Path) -> Path:
     return jpg_path if jpg_path.exists() else png_path
 
 
-def _load_image(path: Path) -> QtGui.QImage:
+def _load_image(path: Path):
+    _, QtGui, _, _ = _qt_image_api()
     image = QtGui.QImage(str(path))
     if image.isNull():
         raise RuntimeError(f"failed to load image: {path}")
     return image
+
+
+def _qt_image_api():
+    from ui.qt_compat import KEEP_ASPECT_RATIO, QtCore, QtGui, SMOOTH_TRANSFORMATION
+
+    return QtCore, QtGui, KEEP_ASPECT_RATIO, SMOOTH_TRANSFORMATION

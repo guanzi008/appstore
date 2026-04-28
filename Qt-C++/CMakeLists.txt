@@ -9,6 +9,14 @@ set(APPSTORE_INFO_VERSION "0.1.0.1" CACHE STRING "Version written to /opt/apps/<
 set(APPSTORE_INFO_ARCH "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Architecture written to /opt/apps/<appid>/info")
 set(APPSTORE_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(APPSTORE_RUNTIME_SHARE_DIR "${APPSTORE_APP_ROOT}/files/share/${APPSTORE_APPID}")
+set(APPSTORE_PYTHON_VENV_DIR "${CMAKE_CURRENT_BINARY_DIR}/python-venv")
+set(APPSTORE_VENDORED_PYTHON_REQUIREMENTS
+    "${APPSTORE_PROJECT_ROOT}/appstore/requirements.txt"
+    CACHE STRING "Semicolon-separated requirements files installed into the bundled venv"
+)
+option(APPSTORE_EMBED_PYTHON_VENV "Build and install a bundled Python virtual environment" ON)
+option(APPSTORE_VENDOR_PYTHON_DEPS "Install Python requirements into the bundled virtual environment" OFF)
+option(APPSTORE_INSTALL_PYTHON_SOURCES "Install Python source trees next to the bytecode runtime" OFF)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC OFF)
@@ -36,11 +44,20 @@ qt_add_executable(utpublisher-qt-cpp
     src/ui/WorkflowBar.cpp
 )
 
+qt_add_executable(utpublisher-python-backend
+    src/backend_launcher.cpp
+)
+
 target_include_directories(utpublisher-qt-cpp PRIVATE src)
 target_compile_definitions(utpublisher-qt-cpp PRIVATE
     APPSTORE_REPO_ROOT="${APPSTORE_RUNTIME_REPO_ROOT}"
 )
 target_link_libraries(utpublisher-qt-cpp PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets PkgConfig::DTK6WIDGET)
+
+target_compile_definitions(utpublisher-python-backend PRIVATE
+    APPSTORE_APPID="${APPSTORE_APPID}"
+)
+target_link_libraries(utpublisher-python-backend PRIVATE Qt6::Core)
 
 file(GLOB_RECURSE APPSTORE_PYTHON_SOURCES CONFIGURE_DEPENDS
     "${APPSTORE_PROJECT_ROOT}/appstore/*.py"
@@ -70,10 +87,61 @@ add_custom_target(appstore-python-bytecode ALL
 install(TARGETS utpublisher-qt-cpp
     RUNTIME DESTINATION "${APPSTORE_APP_ROOT}/files/bin"
 )
+install(TARGETS utpublisher-python-backend
+    RUNTIME DESTINATION "${APPSTORE_APP_ROOT}/files/bin"
+)
 install(DIRECTORY "${APPSTORE_PYTHON_BYTECODE_DIR}/"
     DESTINATION "${APPSTORE_APP_ROOT}/files/lib/python-bytecode"
     PATTERN ".stamp" EXCLUDE
 )
+
+if(APPSTORE_EMBED_PYTHON_VENV)
+    set(APPSTORE_PYTHON_VENV_ARGS
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/build_python_venv.py"
+        "${APPSTORE_PYTHON_VENV_DIR}"
+    )
+    if(APPSTORE_VENDOR_PYTHON_DEPS)
+        list(APPEND APPSTORE_PYTHON_VENV_ARGS "--install-deps")
+        foreach(requirements_file ${APPSTORE_VENDORED_PYTHON_REQUIREMENTS})
+            if(EXISTS "${requirements_file}")
+                list(APPEND APPSTORE_PYTHON_VENV_ARGS "--requirements" "${requirements_file}")
+            endif()
+        endforeach()
+    endif()
+
+    add_custom_command(
+        OUTPUT "${APPSTORE_PYTHON_VENV_DIR}/.stamp"
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${APPSTORE_PYTHON_VENV_DIR}"
+        COMMAND "${Python3_EXECUTABLE}" ${APPSTORE_PYTHON_VENV_ARGS}
+        COMMAND "${CMAKE_COMMAND}" -E touch "${APPSTORE_PYTHON_VENV_DIR}/.stamp"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/build_python_venv.py"
+            ${APPSTORE_VENDORED_PYTHON_REQUIREMENTS}
+        COMMENT "Building bundled Python virtual environment"
+        VERBATIM
+    )
+    add_custom_target(appstore-python-venv ALL
+        DEPENDS "${APPSTORE_PYTHON_VENV_DIR}/.stamp"
+    )
+    install(DIRECTORY "${APPSTORE_PYTHON_VENV_DIR}/"
+        DESTINATION "${APPSTORE_APP_ROOT}/files/venv"
+        USE_SOURCE_PERMISSIONS
+        PATTERN ".stamp" EXCLUDE
+    )
+    install(CODE "
+        file(GLOB _appstore_venv_programs
+            \"\$ENV{DESTDIR}/${APPSTORE_APP_ROOT}/files/venv/bin/python*\"
+            \"\$ENV{DESTDIR}/${APPSTORE_APP_ROOT}/files/venv/bin/pip*\"
+        )
+        foreach(_appstore_venv_program IN LISTS _appstore_venv_programs)
+            if(EXISTS \"\${_appstore_venv_program}\")
+                file(CHMOD \"\${_appstore_venv_program}\"
+                    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+                )
+            endif()
+        endforeach()
+    ")
+endif()
 
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/${APPSTORE_APPID}.desktop"
     DESTINATION "${APPSTORE_APP_ROOT}/entries/applications"
@@ -106,9 +174,11 @@ function(install_python_runtime_tree tree_name)
     endif()
 endfunction()
 
-install_python_runtime_tree("appstore")
-install_python_runtime_tree("ui")
-install_python_runtime_tree("openGA")
+if(APPSTORE_INSTALL_PYTHON_SOURCES)
+    install_python_runtime_tree("appstore")
+    install_python_runtime_tree("ui")
+    install_python_runtime_tree("openGA")
+endif()
 
 foreach(requirements_file
         "${APPSTORE_PROJECT_ROOT}/requirements.txt"

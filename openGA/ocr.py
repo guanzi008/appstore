@@ -32,6 +32,10 @@ class OCRLine:
 
 def default_ocr_python() -> str:
     repo_root = Path(__file__).resolve().parents[1]
+    for parent in Path(__file__).resolve().parents:
+        packaged_python = parent / "venv" / "bin" / "python"
+        if packaged_python.exists():
+            return str(packaged_python)
     venv_python = repo_root / ".venv-ocr" / "bin" / "python3"
     if venv_python.exists():
         return str(venv_python)
@@ -48,6 +52,8 @@ def ocr_image(
         raise OCRMatchError(f"ocr image not found: {target}")
 
     runtime = Path(__file__).resolve().with_name("ocr_runtime.py")
+    if not runtime.exists():
+        runtime = runtime.with_suffix(".pyc")
     python_bin = (python_executable or default_ocr_python()).strip()
     completed = subprocess.run(
         [python_bin, str(runtime), str(target)],

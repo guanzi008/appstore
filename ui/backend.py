@@ -1253,15 +1253,23 @@ def _submit_grouped_release(
         capability_cache=cache,
     )
 
-    _log(log, "上传包文件。")
-    uploads_by_package = {
-        package.package_key: login.client.upload_file_bytes(
-            filename=package.file_path.name,
-            data=package.file_path.read_bytes(),
-            upload_type="temppkg",
-        )
-        for package in package_records
-    }
+    uploads_by_package = {}
+    uploadable_records = [package for package in package_records if package.file_path.exists()]
+    if uploadable_records:
+        _log(log, "上传包文件。")
+    else:
+        _log(log, "未选择新安装包，复用线上已有包文件。")
+    for package in package_records:
+        if package.file_path.exists():
+            uploads_by_package[package.package_key] = login.client.upload_file_bytes(
+                filename=package.file_path.name,
+                data=package.file_path.read_bytes(),
+                upload_type="temppkg",
+            )
+            continue
+        if str(package.file_path).startswith("online/") and existing_app_detail is not None:
+            continue
+        raise RuntimeError(f"package file is not readable: {package.file_path}")
 
     app_uploads = None
     if assets.icon_path is not None and assets.screenshot_paths:

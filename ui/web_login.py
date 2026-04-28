@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
 
 from appstore.session_state import BrowserSessionState
@@ -125,7 +126,12 @@ class StoreWebLoginDialog(QtWidgets.QDialog):
         self.resize(1280, 900)
 
         self._profile = QtWebEngineCore.QWebEngineProfile("appstore-ui-login", self)
-        cache_root = Path(__file__).resolve().parent / "cache" / "webengine"
+        cache_root = Path(
+            os.environ.get(
+                "UTPUBLISHER_WEBENGINE_CACHE_DIR",
+                str(Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "utpublisher" / "webengine"),
+            )
+        ).expanduser()
         cache_root.mkdir(parents=True, exist_ok=True)
         if hasattr(self._profile, "setCachePath"):
             self._profile.setCachePath(str(cache_root / "cache"))

@@ -11,7 +11,9 @@ from appstore.update_payload import (
     build_reused_basic_info,
     build_reused_fit_info,
     build_reused_lan_infos,
+    extract_detail_data,
     merge_origin_pkgs,
+    normalize_origin_pkg,
 )
 
 
@@ -99,6 +101,70 @@ def _adapt_code_objects(codes: tuple[str, ...] | list[str] | None) -> list[dict]
         seen.add(normalized)
         result.append({"code": int(normalized) if normalized.isdigit() else normalized})
     return result
+
+
+def _append_unique_text(sequence: list[str], value: object) -> None:
+    normalized = str(value or "").strip()
+    if normalized and normalized not in sequence:
+        sequence.append(normalized)
+
+
+def _origin_pkg_arch_matches(origin_pkg: dict, package_info: PackageInfo) -> bool:
+    expected_code, expected_label = _resolve_store_arch(package_info.pkg_arch)
+    candidates = {
+        str(package_info.pkg_arch or "").strip().lower(),
+        expected_code.lower(),
+        expected_label.lower(),
+    }
+    normalized = normalize_origin_pkg(origin_pkg)
+    raw_arch = str(normalized.get("pkg_arch", "") or "").strip().lower()
+    raw_label = str(normalized.get("pkgArch", "") or "").strip().lower()
+    return raw_arch in candidates or raw_label in candidates
+
+
+def _find_existing_origin_pkg(
+    existing_app_detail: dict | None,
+    *,
+    package: PackageRecord,
+    package_info: PackageInfo,
+) -> dict:
+    detail_data = extract_detail_data(existing_app_detail)
+    expected_type = PKG_TYPE_MAP[(package.package_family, package.package_format)]
+    for origin_pkg in detail_data.get("app_origin_pkgs") or ():
+        if not isinstance(origin_pkg, dict):
+            continue
+        normalized = normalize_origin_pkg(origin_pkg)
+        pkg_name = str(normalized.get("pkg_name", "") or "").strip()
+        if pkg_name and pkg_name != package_info.pkg_name:
+            continue
+        if str(normalized.get("pkg_version", "") or "").strip() != package_info.pkg_version:
+            continue
+        if str(normalized.get("pkgType", "") or "").strip() != str(expected_type):
+            continue
+        if not _origin_pkg_arch_matches(normalized, package_info):
+            continue
+        return origin_pkg
+    raise ValidationError(
+        f"existing package row not found for {package_info.pkg_name} "
+        f"{package_info.pkg_version} {package_info.pkg_arch}"
+    )
+
+
+def _fit_values_from_origin_pkgs(origin_pkgs: list[dict]) -> tuple[list[str], list[str], list[str], list[str]]:
+    system_codes: list[str] = []
+    baseline_ids: list[str] = []
+    unsupported_ids: list[str] = []
+    arch_codes: list[str] = []
+    for origin_pkg in origin_pkgs:
+        normalized = normalize_origin_pkg(origin_pkg)
+        for code in normalized.get("system_platform") or ():
+            _append_unique_text(system_codes, code)
+        for baseline_id in normalized.get("baseline") or ():
+            _append_unique_text(baseline_ids, baseline_id)
+        for baseline_id in normalized.get("unsupportBaseline") or ():
+            _append_unique_text(unsupported_ids, baseline_id)
+        _append_unique_text(arch_codes, normalized.get("pkg_arch"))
+    return system_codes, baseline_ids, unsupported_ids, arch_codes
 
 
 def _upload_time_label() -> str:
@@ -240,8 +306,24 @@ def build_release_payload(
                 fit_unsupported_ids.append(unsupported_id)
         if arch_code not in fit_arch_codes:
             fit_arch_codes.append(arch_code)
-        origin_pkgs.append(
-            {
+        upload_ref = uploads_by_package.get(package.package_key)
+        if upload_ref is None:
+            if existing_app_detail is None:
+                raise ValidationError(f"package upload missing for {package.package_key}")
+            existing_origin_pkg = _find_existing_origin_pkg(
+                existing_app_detail,
+                package=package,
+                package_info=package_info,
+            )
+            origin_pkg = normalize_origin_pkg(existing_origin_pkg)
+            origin_pkg["pkgChannel"] = origin_pkg.get("pkgChannel") or package.pkg_channel or None
+            origin_pkg["sums"] = existing_origin_pkg.get("sums", 0) or 0
+            origin_pkg["upload_time"] = (
+                str(existing_origin_pkg.get("upload_time", "") or existing_origin_pkg.get("uploadTime", "")).strip()
+                or _upload_time_label()
+            )
+        else:
+            origin_pkg = {
                 "pkg_name": package_info.pkg_name,
                 "pkg_version": package_info.pkg_version,
                 "pkg_arch": arch_code,
@@ -252,9 +334,17 @@ def build_release_payload(
                 "sums": 0,
                 "pkg_size": package_info.pkg_size,
                 "sha256": package_info.sha256,
-                "file_save_key": uploads_by_package[package.package_key].file_save_key,
+                "file_save_key": upload_ref.file_save_key,
                 "progressPercent": 100,
                 "upload_time": _upload_time_label(),
+            }
+        origin_pkg.update(
+            {
+                "pkg_name": package_info.pkg_name,
+                "pkg_version": package_info.pkg_version,
+                "pkg_arch": arch_code,
+                "pkgArch": arch_label,
+                "pkgType": PKG_TYPE_MAP[(package.package_family, package.package_format)],
                 "index": index,
                 "system_platform": sup_sys_codes,
                 "supSys": ",".join(sup_sys_codes),
@@ -265,6 +355,7 @@ def build_release_payload(
                 "systemStr": " ".join(system_labels),
             }
         )
+        origin_pkgs.append(origin_pkg)
 
     package_install_mode = 1 if validated_release.package_family == "deb" else 2
     region_codes = _resolve_region_codes(validated_release.release.region)
@@ -273,6 +364,10 @@ def build_release_payload(
     motherboard_codes = getattr(validated_release.release, "motherboard_codes", None)
     if existing_app_detail is not None:
         overrides = existing_app_overrides or {}
+        merged_origin_pkgs = merge_origin_pkgs(existing_app_detail, origin_pkgs)
+        fit_system_codes, fit_baseline_ids, fit_unsupported_ids, fit_arch_codes = _fit_values_from_origin_pkgs(
+            merged_origin_pkgs
+        )
         app_info = {
             "app_lan_infos": build_reused_lan_infos(
                 existing_app_detail,
@@ -329,8 +424,9 @@ def build_release_payload(
                 region_codes=region_codes,
                 fit_cpu_clip_codes=list(cpu_clip_codes) if cpu_clip_codes is not None else None,
                 fit_motherboard_codes=list(motherboard_codes) if motherboard_codes is not None else None,
+                replace_fit_values=True,
             ),
-            "app_origin_pkgs": merge_origin_pkgs(existing_app_detail, origin_pkgs),
+            "app_origin_pkgs": merged_origin_pkgs,
         }
     else:
         if not app_uploads:

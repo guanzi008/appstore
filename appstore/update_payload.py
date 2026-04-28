@@ -199,18 +199,19 @@ def build_reused_fit_info(
     region_codes: list[int],
     fit_cpu_clip_codes: list[str] | None = None,
     fit_motherboard_codes: list[str] | None = None,
+    replace_fit_values: bool = False,
 ) -> dict:
     detail_data = extract_detail_data(existing_app_detail)
     fit_info = detail_data.get("app_fit_info") or {}
 
     system_mode_codes = _code_items(fit_info.get("system_mode")) or ["1"]
-    system_platform_codes = _code_items(fit_info.get("system_platform"))
-    arch_codes = _code_items(fit_info.get("arch"))
-    normalized_region_codes = _code_items(fit_info.get("region"))
+    system_platform_codes = [] if replace_fit_values else _code_items(fit_info.get("system_platform"))
+    arch_codes = [] if replace_fit_values else _code_items(fit_info.get("arch"))
+    normalized_region_codes = [] if replace_fit_values else _code_items(fit_info.get("region"))
     if not normalized_region_codes:
         normalized_region_codes = [str(code) for code in region_codes] or ["1"]
-    baseline_ids = list(_csv_tokens(fit_info.get("baseline")))
-    unsupported_ids = list(_csv_tokens(fit_info.get("unsupportBaseline")))
+    baseline_ids = [] if replace_fit_values else list(_csv_tokens(fit_info.get("baseline")))
+    unsupported_ids = [] if replace_fit_values else list(_csv_tokens(fit_info.get("unsupportBaseline")))
     cpu_clip_codes = _code_items(fit_info.get("cpu_clip"))
     motherboard_codes = _code_items(fit_info.get("motherboard"))
 
@@ -280,13 +281,13 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
     }
 
 
-def _origin_pkg_identity(origin_pkg: dict) -> tuple[str, str, str, tuple[str, ...]]:
+def _origin_pkg_identity(origin_pkg: dict) -> tuple[str, str, str, str]:
     normalized = normalize_origin_pkg(origin_pkg)
     return (
+        _text(normalized.get("pkg_name")),
         _text(normalized.get("pkg_arch")),
         _text(normalized.get("pkg_version")),
         _text(normalized.get("pkgType")),
-        tuple(normalized.get("system_platform") or ()),
     )
 
 

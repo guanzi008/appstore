@@ -29,9 +29,19 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
 
     m_currentCommand = command;
     m_process = new QProcess(this);
-    const QString venvPython = m_repoRoot + QStringLiteral("/.venv/bin/python");
-    m_process->setProgram(QFileInfo::exists(venvPython) ? venvPython : QStringLiteral("python3"));
-    m_process->setArguments({QStringLiteral("-m"), QStringLiteral("ui.cpp_bridge"), command});
+    const QString packagedBackend = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../bin/utpublisher-python-backend")));
+    const QString packagedVenvPython = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../venv/bin/python")));
+    const QString devVenvPython = m_repoRoot + QStringLiteral("/.venv/bin/python");
+    if (QFileInfo::exists(packagedBackend)) {
+        m_process->setProgram(packagedBackend);
+        m_process->setArguments({command});
+    } else {
+        const QString pythonProgram = QFileInfo::exists(packagedVenvPython)
+            ? packagedVenvPython
+            : (QFileInfo::exists(devVenvPython) ? devVenvPython : QStringLiteral("python3"));
+        m_process->setProgram(pythonProgram);
+        m_process->setArguments({QStringLiteral("-m"), QStringLiteral("ui.cpp_bridge"), command});
+    }
     m_process->setWorkingDirectory(m_repoRoot);
 
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -47,6 +57,9 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
     }
     environment.insert(QStringLiteral("PYTHONPATH"), pythonPathEntries.join(QStringLiteral(":")));
     environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+    if (QFileInfo::exists(packagedBackend) || QFileInfo::exists(packagedVenvPython)) {
+        environment.insert(QStringLiteral("PYTHONNOUSERSITE"), QStringLiteral("1"));
+    }
     const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (!dataRoot.isEmpty()) {
         QDir().mkpath(dataRoot);
@@ -55,6 +68,7 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
         environment.insert(QStringLiteral("UTPUBLISHER_SESSION_CACHE_DIR"), dataDir.filePath(QStringLiteral("session-state")));
         environment.insert(QStringLiteral("UTPUBLISHER_OUTPUT_ROOT"), dataDir.filePath(QStringLiteral("output")));
         environment.insert(QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"), dataDir.filePath(QStringLiteral("preferences.json")));
+        environment.insert(QStringLiteral("UTPUBLISHER_WEBENGINE_CACHE_DIR"), dataDir.filePath(QStringLiteral("webengine")));
     }
     m_process->setProcessEnvironment(environment);
 
@@ -68,7 +82,7 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             const QString command = m_currentCommand;
-            const QString message = tr("无法启动 python3 后端进程。");
+            const QString message = tr("无法启动后端进程。");
             cleanupProcess();
             emit commandFailed(command, message, {});
         }
