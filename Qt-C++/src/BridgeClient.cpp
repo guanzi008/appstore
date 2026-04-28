@@ -30,15 +30,13 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
     m_currentCommand = command;
     m_process = new QProcess(this);
     const QString packagedBackend = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../bin/utpublisher-python-backend")));
-    const QString packagedVenvPython = QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../venv/bin/python")));
     const QString devVenvPython = m_repoRoot + QStringLiteral("/.venv/bin/python");
-    if (QFileInfo::exists(packagedBackend)) {
+    const bool usePackagedBackend = QFileInfo::exists(packagedBackend);
+    if (usePackagedBackend) {
         m_process->setProgram(packagedBackend);
         m_process->setArguments({command});
     } else {
-        const QString pythonProgram = QFileInfo::exists(packagedVenvPython)
-            ? packagedVenvPython
-            : (QFileInfo::exists(devVenvPython) ? devVenvPython : QStringLiteral("python3"));
+        const QString pythonProgram = QFileInfo::exists(devVenvPython) ? devVenvPython : QStringLiteral("python3");
         m_process->setProgram(pythonProgram);
         m_process->setArguments({QStringLiteral("-m"), QStringLiteral("ui.cpp_bridge"), command});
     }
@@ -52,13 +50,18 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
         pythonPathEntries.append(bytecodeRoot);
     }
     pythonPathEntries.append(m_repoRoot);
-    if (!oldPythonPath.isEmpty()) {
+    if (!usePackagedBackend && !oldPythonPath.isEmpty()) {
         pythonPathEntries.append(oldPythonPath);
     }
     environment.insert(QStringLiteral("PYTHONPATH"), pythonPathEntries.join(QStringLiteral(":")));
     environment.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
-    if (QFileInfo::exists(packagedBackend) || QFileInfo::exists(packagedVenvPython)) {
+    if (usePackagedBackend) {
         environment.insert(QStringLiteral("PYTHONNOUSERSITE"), QStringLiteral("1"));
+        environment.insert(QStringLiteral("UTPUBLISHER_PYTHON_BYTECODE_ROOT"), bytecodeRoot);
+        environment.insert(
+            QStringLiteral("UTPUBLISHER_PYTHON_RUNTIME_ROOT"),
+            QDir::cleanPath(QDir(m_repoRoot).filePath(QStringLiteral("../../python-runtime")))
+        );
     }
     const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (!dataRoot.isEmpty()) {

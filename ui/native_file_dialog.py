@@ -153,8 +153,11 @@ def _preferred_locale_name() -> str:
 
 
 def _translation_candidates(locale_name: str) -> tuple[str, ...]:
-    if hasattr(QtCore.QLibraryInfo, "path") and hasattr(QtCore.QLibraryInfo, "LibraryPath"):
-        base = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.TranslationsPath)
+    if hasattr(QtCore.QLibraryInfo, "path"):
+        if hasattr(QtCore.QLibraryInfo, "LibraryPath"):
+            base = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.TranslationsPath)
+        else:
+            base = QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.TranslationsPath)
     else:
         base = QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.TranslationsPath)
     language = locale_name.split("_", 1)[0]

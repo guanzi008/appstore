@@ -14,7 +14,7 @@ entries/icons/hicolor/scalable/apps/com.uniontech.utpublisher.svg
 files/bin/utpublisher-qt-cpp
 files/bin/utpublisher-python-backend
 files/lib/python-bytecode/{appstore,ui,openGA}
-files/venv
+files/python-runtime
 files/share/com.uniontech.utpublisher/requirements files
 info
 ```
@@ -23,7 +23,9 @@ The Qt launcher sets Python backend cache, session, preferences, output, and
 manual asset paths to XDG user locations at runtime. The installed tree under
 `/opt/apps` is treated as read-only application payload.
 
-Python source files are not installed by default. The package carries a
-sourceless bytecode runtime plus an embedded virtual environment for pure
-Python backend dependencies. Qt Python bindings remain Debian runtime
-dependencies so the package does not bundle a second copy of Qt libraries.
+Python source files are not installed by default. The package carries the
+backend as sourceless bytecode plus a private embedded CPython runtime under
+`files/python-runtime`, including the Python standard library, `libpython`, and
+the backend's Python dependencies. The installed backend binary embeds CPython
+directly and does not launch `/usr/bin/python3` or a virtual environment at
+runtime.
