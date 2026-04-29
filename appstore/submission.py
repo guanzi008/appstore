@@ -8,6 +8,9 @@ from appstore.appstore_client import AppStoreClient
 from appstore.capabilities import CapabilityCache
 from appstore.models import AppRecord, PackageInfo, PackageRecord, ReleaseRecord, TargetRecord, UploadedFileRef
 from appstore.update_payload import (
+    baseline_ids_from_value,
+    baseline_id_objects,
+    baseline_system_id_objects,
     build_reused_basic_info,
     build_reused_fit_info,
     build_reused_lan_infos,
@@ -109,6 +112,12 @@ def _append_unique_text(sequence: list[str], value: object) -> None:
         sequence.append(normalized)
 
 
+def _append_unique_baseline_entry(sequence: list[dict], system_code: str, baseline_id: str) -> None:
+    for entry in baseline_system_id_objects([system_code], [baseline_id]):
+        if entry not in sequence:
+            sequence.append(entry)
+
+
 def _origin_pkg_arch_matches(origin_pkg: dict, package_info: PackageInfo) -> bool:
     expected_code, expected_label = _resolve_store_arch(package_info.pkg_arch)
     candidates = {
@@ -159,9 +168,9 @@ def _fit_values_from_origin_pkgs(origin_pkgs: list[dict]) -> tuple[list[str], li
         normalized = normalize_origin_pkg(origin_pkg)
         for code in normalized.get("system_platform") or ():
             _append_unique_text(system_codes, code)
-        for baseline_id in normalized.get("baseline") or ():
+        for baseline_id in baseline_ids_from_value(normalized.get("baseline")):
             _append_unique_text(baseline_ids, baseline_id)
-        for baseline_id in normalized.get("unsupportBaseline") or ():
+        for baseline_id in baseline_ids_from_value(normalized.get("unsupportBaseline")):
             _append_unique_text(unsupported_ids, baseline_id)
         _append_unique_text(arch_codes, normalized.get("pkg_arch"))
     return system_codes, baseline_ids, unsupported_ids, arch_codes
@@ -283,10 +292,15 @@ def build_release_payload(
         package_info = validated_package.package_info
         sup_sys_codes = [target.sup_sys_code for target in validated_package.targets]
         baseline_ids: list[str] = []
+        baseline_entries: list[dict] = []
+        unsupported_entries: list[dict] = []
         for target in validated_package.targets:
             for baseline_id in _target_baseline_ids(target):
                 if baseline_id not in baseline_ids:
                     baseline_ids.append(baseline_id)
+                _append_unique_baseline_entry(baseline_entries, target.sup_sys_code, baseline_id)
+            for baseline_id in target.unsupport_baseline_ids:
+                _append_unique_baseline_entry(unsupported_entries, target.sup_sys_code, baseline_id)
         unsupported_ids = [
             baseline_id for target in validated_package.targets for baseline_id in target.unsupport_baseline_ids
         ]
@@ -348,9 +362,9 @@ def build_release_payload(
                 "index": index,
                 "system_platform": sup_sys_codes,
                 "supSys": ",".join(sup_sys_codes),
-                "baseline": baseline_ids,
+                "baseline": baseline_entries,
                 "supBlineVer": ",".join(baseline_ids),
-                "unsupportBaseline": unsupported_ids,
+                "unsupportBaseline": unsupported_entries,
                 "unsupportBlineVers": ",".join(unsupported_ids),
                 "systemStr": " ".join(system_labels),
             }
@@ -459,8 +473,8 @@ def build_release_payload(
             },
             "app_fit_info": {
                 "system_mode": [{"code": 1}],
-                "baseline": fit_baseline_ids,
-                "unsupportBaseline": fit_unsupported_ids,
+                "baseline": baseline_id_objects(fit_baseline_ids),
+                "unsupportBaseline": baseline_id_objects(fit_unsupported_ids),
                 "system_platform": [{"code": code} for code in fit_system_codes],
                 "region": [{"code": code} for code in region_codes],
                 "arch": [{"code": code} for code in fit_arch_codes],
@@ -476,6 +490,8 @@ def build_release_payload(
     }
     if target_app_id:
         payload["app_id"] = target_app_id
+        if existing_app_detail is not None and not app_info["app_basic_info"].get("app_id"):
+            app_info["app_basic_info"]["app_id"] = target_app_id
     return payload
 
 

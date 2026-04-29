@@ -845,7 +845,14 @@ def submit_applications_batch(
         except Exception as exc:
             message = str(exc).strip() or exc.__class__.__name__
             _log(log, f"[{index}/{len(plans)}] 失败：{message}")
-            all_rows.extend(_batch_failure_rows(package_group, message=message, start_row_id=next_row_id))
+            all_rows.extend(
+                _batch_failure_rows(
+                    package_group,
+                    message=message,
+                    start_row_id=next_row_id,
+                    app_id=_failure_app_id_from_plan(plan),
+                )
+            )
         next_row_id = len(all_rows) + 1
     report_path = _write_submission_report(output_dir, all_rows)
     _log(log, f"批量提交完成，报告已写入 {report_path}")
@@ -1422,11 +1429,18 @@ def _renumber_submission_rows(rows: tuple[dict, ...] | list[dict], *, start_row_
     return result
 
 
+def _failure_app_id_from_plan(plan: BatchGroupSubmissionPlan) -> str:
+    if plan.selected_match is None:
+        return ""
+    return str(plan.selected_match.app_id).strip()
+
+
 def _batch_failure_rows(
     package_group: PackageGroup,
     *,
     message: str,
     start_row_id: int,
+    app_id: str = "",
 ) -> list[dict]:
     rows: list[dict] = []
     for offset, package in enumerate(package_group.packages):
@@ -1437,7 +1451,7 @@ def _batch_failure_rows(
                 "deb_path": str(package.path),
                 "status": "submit_failed",
                 "message": message,
-                "app_id": "",
+                "app_id": app_id,
                 "pkg_name": package.pkg_name,
                 "pkg_version": package.pkg_version,
                 "selector": f"pkg:{start_row_id + offset}",

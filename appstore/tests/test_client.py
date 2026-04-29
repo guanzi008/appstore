@@ -182,8 +182,8 @@ class ClientDecisionTests(unittest.TestCase):
             target_app_id="1096227",
         )
 
-        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], ["23.0.0"])
-        self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["baseline"], ["23.0.0"])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], [{"id": "23.0.0"}])
+        self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["baseline"], [{"system_platform": 11, "id": "23.0.0"}])
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["supBlineVer"], "23.0.0")
 
     def test_build_submit_payload_rejects_unsupported_platform_mapping(self) -> None:
@@ -221,6 +221,9 @@ class ClientDecisionTests(unittest.TestCase):
     def test_build_submit_payload_reuses_existing_detail_for_update(self) -> None:
         detail = {
             "app_basic_info": {
+                "id": "detail-uuid",
+                "app_id": 1096227,
+                "status": 101,
                 "category_id": 9,
                 "website": "https://existing.example/app",
                 "region": "1",
@@ -284,9 +287,11 @@ class ClientDecisionTests(unittest.TestCase):
         self.assertEqual(lan_info["icon_save_key"], "existing-icon")
         self.assertEqual(lan_info["update_desc"], "只改更新内容")
         self.assertEqual(payload["app_info"]["app_basic_info"]["category_id"], 9)
-        self.assertEqual(len(payload["app_info"]["app_origin_pkgs"]), 2)
-        self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "old-pkg")
-        self.assertEqual(payload["app_info"]["app_origin_pkgs"][1]["file_save_key"], "pkg-key")
+        self.assertEqual(payload["app_info"]["app_basic_info"]["id"], "detail-uuid")
+        self.assertEqual(payload["app_info"]["app_basic_info"]["app_id"], 1096227)
+        self.assertEqual(payload["app_info"]["app_basic_info"]["status"], 101)
+        self.assertEqual(len(payload["app_info"]["app_origin_pkgs"]), 1)
+        self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "pkg-key")
 
     def test_build_submit_payload_replaces_existing_screenshots_when_provided(self) -> None:
         detail = {

@@ -10,6 +10,8 @@ from pyppeteer import launch
 from appstore.models import AppRecord, DebPackageInfo, ReleaseRecord, UploadedFileRef
 from appstore.platforms import resolve_store_arch, resolve_store_platform
 from appstore.update_payload import (
+    baseline_id_objects,
+    baseline_system_id_objects,
     build_reused_basic_info,
     build_reused_fit_info,
     build_reused_lan_infos,
@@ -218,7 +220,7 @@ def build_submit_payload(
         "system_platform": [platform.code],
         "systemStr": platform.system_label,
         "supSys": platform.sup_sys,
-        "baseline": baseline_values,
+        "baseline": baseline_system_id_objects([str(platform.code)], baseline_values),
         "unsupportBaseline": [],
         "supBlineVer": release.baseline.strip(),
         "unsupportBlineVers": "",
@@ -311,7 +313,7 @@ def build_submit_payload(
             },
             "app_fit_info": {
                 "system_mode": [{"code": 1}],
-                "baseline": baseline_values,
+                "baseline": baseline_id_objects(baseline_values),
                 "unsupportBaseline": [],
                 "system_platform": [{"code": platform.code}],
                 "region": [{"code": region_code}],
@@ -329,6 +331,8 @@ def build_submit_payload(
     }
     if target_app_id:
         payload["app_id"] = target_app_id
+        if existing_app_detail is not None and not app_info["app_basic_info"].get("app_id"):
+            app_info["app_basic_info"]["app_id"] = target_app_id
     return payload
 
 

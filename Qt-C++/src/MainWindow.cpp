@@ -226,6 +226,49 @@ bool groupTargetsExistingApp(const QJsonObject &group)
     return group.value(QStringLiteral("online_only")).toBool(false) || !selectedMatchId(group).isEmpty();
 }
 
+int submissionTotalCount(const QJsonObject &report)
+{
+    const QJsonArray rows = report.value(QStringLiteral("rows")).toArray();
+    return rows.size();
+}
+
+int submissionFailureCount(const QJsonObject &report)
+{
+    if (report.contains(QStringLiteral("failure_count"))) {
+        return report.value(QStringLiteral("failure_count")).toInt();
+    }
+    int failures = 0;
+    const QJsonArray rows = report.value(QStringLiteral("rows")).toArray();
+    for (const QJsonValue &value : rows) {
+        const QString status = value.toObject().value(QStringLiteral("status")).toString().trimmed();
+        if (status != QStringLiteral("submitted")) {
+            ++failures;
+        }
+    }
+    return failures;
+}
+
+QString firstSubmissionFailureMessage(const QJsonObject &report)
+{
+    const QJsonArray rows = report.value(QStringLiteral("rows")).toArray();
+    for (const QJsonValue &value : rows) {
+        const QJsonObject row = value.toObject();
+        const QString status = row.value(QStringLiteral("status")).toString().trimmed();
+        if (status == QStringLiteral("submitted")) {
+            continue;
+        }
+        const QString package = row.value(QStringLiteral("pkg_name")).toString().trimmed();
+        const QString message = row.value(QStringLiteral("message")).toString().simplified();
+        if (!package.isEmpty() && !message.isEmpty()) {
+            return QStringLiteral("%1：%2").arg(package, message);
+        }
+        if (!message.isEmpty()) {
+            return message;
+        }
+    }
+    return {};
+}
+
 QJsonObject copyEditableOnlineFields(QJsonObject target, const QJsonObject &source)
 {
     static const QStringList alwaysCopyKeys = {
@@ -612,6 +655,23 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         appendLogs(data.value(QStringLiteral("logs")).toArray());
         const QJsonObject report = data.value(QStringLiteral("report")).toObject();
         const QString reportPath = report.value(QStringLiteral("report_path")).toString();
+        const int totalCount = submissionTotalCount(report);
+        const int failureCount = submissionFailureCount(report);
+        if (failureCount > 0) {
+            const QString failureMessage = firstSubmissionFailureMessage(report);
+            m_sidebar->setTaskState(QStringLiteral("submit"), QStringLiteral("failed"), QStringLiteral("%1/%2 失败").arg(failureCount).arg(totalCount));
+            m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Done, StepState::Failed);
+            m_workflowBar->setStatusText(QStringLiteral("提交失败 %1/%2，报告：%3").arg(failureCount).arg(totalCount).arg(reportPath));
+            QMessageBox::warning(
+                this,
+                QStringLiteral("提交失败"),
+                QStringLiteral("后端已生成报告，但有 %1/%2 个包提交失败。\n%3\n报告：%4")
+                    .arg(failureCount)
+                    .arg(totalCount)
+                    .arg(failureMessage)
+                    .arg(reportPath));
+            return;
+        }
         m_sidebar->setTaskState(QStringLiteral("submit"), QStringLiteral("done"), QStringLiteral("当前应用"));
         m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Done, StepState::Done);
         m_workflowBar->setStatusText(QStringLiteral("提交完成，报告：%1").arg(reportPath));
@@ -1184,7 +1244,7 @@ void MainWindow::selectOnlineApp(const QJsonObject &app)
 
 void MainWindow::submitCurrentGroup()
 {
-    const QJsonObject group = currentGroupFromUi();
+    const QJsonObject group = normalizedGroup(groupWithSelectedOnlineApp(currentGroupFromUi()));
     if (group.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先选择我的应用，或拖入并解析包文件。"));
         return;

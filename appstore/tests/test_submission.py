@@ -81,6 +81,9 @@ class GroupedSubmissionTests(unittest.TestCase):
         validated = validate_release_group(app, release, packages, targets, inspected, _cache())
         existing_detail = {
             "app_basic_info": {
+                "id": "detail-uuid",
+                "app_id": 42,
+                "status": 101,
                 "category_id": 9,
                 "website": "https://existing.example/demo",
                 "region": "1",
@@ -144,6 +147,9 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["icon_save_key"], "existing-icon")
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["update_desc"], "新增 arm64 包并更新说明")
         self.assertEqual(payload["app_info"]["app_basic_info"]["category_id"], 9)
+        self.assertEqual(payload["app_info"]["app_basic_info"]["id"], "detail-uuid")
+        self.assertEqual(payload["app_info"]["app_basic_info"]["app_id"], 42)
+        self.assertEqual(payload["app_info"]["app_basic_info"]["status"], 101)
         self.assertEqual(len(payload["app_info"]["app_origin_pkgs"]), 2)
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "existing-x86")
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][1]["file_save_key"], "pkg-arm-key")
@@ -235,9 +241,9 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(len(origin_pkgs), 1)
         self.assertEqual(origin_pkgs[0]["file_save_key"], "existing-x86")
         self.assertEqual(origin_pkgs[0]["system_platform"], ["21"])
-        self.assertEqual(origin_pkgs[0]["baseline"], ["2500"])
+        self.assertEqual(origin_pkgs[0]["baseline"], [{"system_platform": 21, "id": "2500"}])
         self.assertEqual(payload["app_info"]["app_fit_info"]["system_platform"], [{"code": 21}])
-        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], ["2500"])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], [{"id": "2500"}])
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["name"], "新名称")
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["update_desc"], "只更新文案和系统线")
 
@@ -528,7 +534,7 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][1]["systemStr"], "communityV25")
         self.assertEqual(payload["app_info"]["app_fit_info"]["system_platform"], [{"code": "11"}, {"code": "21"}])
         self.assertEqual(payload["app_info"]["app_fit_info"]["arch"], [{"code": "4"}])
-        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], ["2300", "2500"])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], [{"id": "2300"}, {"id": "2500"}])
 
     def test_build_release_payload_supports_multiple_baselines_per_system_line(self) -> None:
         app = _app()
@@ -583,9 +589,12 @@ class GroupedSubmissionTests(unittest.TestCase):
             target_app_id="42",
         )
 
-        self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["baseline"], ["2300", "2301"])
+        self.assertEqual(
+            payload["app_info"]["app_origin_pkgs"][0]["baseline"],
+            [{"system_platform": 11, "id": "2300"}, {"system_platform": 11, "id": "2301"}],
+        )
         self.assertEqual(payload["app_info"]["app_origin_pkgs"][0]["supBlineVer"], "2300,2301")
-        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], ["2300", "2301"])
+        self.assertEqual(payload["app_info"]["app_fit_info"]["baseline"], [{"id": "2300"}, {"id": "2301"}])
 
     def test_validate_release_group_rejects_same_arch_system_version_collision(self) -> None:
         app = _app()

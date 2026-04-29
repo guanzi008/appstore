@@ -808,10 +808,19 @@ def _submission_row_to_json(row: dict) -> dict:
 
 
 def _submission_result_to_json(result: SubmissionResult) -> dict:
+    rows = [_submission_row_to_json(row) for row in result.rows]
+    status_counts: dict[str, int] = {}
+    for row in rows:
+        status = row["status"] or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+    failure_count = sum(count for status, count in status_counts.items() if status != "submitted")
     return {
         "output_dir": str(result.output_dir),
         "report_path": str(result.report_path),
-        "rows": [_submission_row_to_json(row) for row in result.rows],
+        "rows": rows,
+        "status_counts": status_counts,
+        "success_count": status_counts.get("submitted", 0),
+        "failure_count": failure_count,
     }
 
 

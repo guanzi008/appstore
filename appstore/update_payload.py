@@ -33,11 +33,53 @@ def _csv_tokens(value: Any) -> tuple[str, ...]:
     return tuple(tokens)
 
 
+def _id_items(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = str(value).split(",")
+
+    items: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            normalized = (
+                _text(item.get("id"))
+                or _text(item.get("baseline_id"))
+                or _text(item.get("baselineId"))
+                or _text(item.get("code"))
+            )
+        else:
+            normalized = _text(item)
+        if normalized and normalized not in items:
+            items.append(normalized)
+    return items
+
+
+def baseline_id_objects(values: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+    return [{"id": value} for value in _id_items(list(values))]
+
+
 def _coerce_code(value: Any) -> str | int:
     normalized = _text(value)
     if normalized.isdigit():
         return int(normalized)
     return normalized
+
+
+def baseline_ids_from_value(value: Any) -> list[str]:
+    return _id_items(value)
+
+
+def baseline_system_id_objects(system_codes: list[str] | tuple[str, ...], values: list[str] | tuple[str, ...]) -> list[dict]:
+    entries: list[dict] = []
+    for system_code in _code_items(list(system_codes)):
+        for baseline_id in _id_items(list(values)):
+            entry = {"system_platform": _coerce_code(system_code), "id": baseline_id}
+            if entry not in entries:
+                entries.append(entry)
+    return entries
 
 
 def _append_unique(sequence: list[Any], value: Any) -> None:
@@ -58,6 +100,47 @@ def _code_items(value: Any) -> list[str]:
                 items.append(code)
         return items
     return list(_csv_tokens(value))
+
+
+def _baseline_system_codes(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    codes: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        code = _text(item.get("system_platform")) or _text(item.get("systemPlatform"))
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _normalize_baseline_entries(value: Any, system_codes: list[str], fallback_ids: list[str]) -> list[dict]:
+    entries: list[dict] = []
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            baseline_id = (
+                _text(item.get("id"))
+                or _text(item.get("baseline_id"))
+                or _text(item.get("baselineId"))
+                or _text(item.get("code"))
+            )
+            if not baseline_id:
+                continue
+            system_code = _text(item.get("system_platform")) or _text(item.get("systemPlatform"))
+            if system_code:
+                entry = {"system_platform": _coerce_code(system_code), "id": baseline_id}
+                if entry not in entries:
+                    entries.append(entry)
+                continue
+            for entry in baseline_system_id_objects(system_codes, [baseline_id]):
+                if entry not in entries:
+                    entries.append(entry)
+    if entries:
+        return entries
+    return baseline_system_id_objects(system_codes, fallback_ids)
 
 
 def extract_detail_data(existing_app_detail: dict | None) -> dict:
@@ -178,15 +261,15 @@ def build_reused_basic_info(
 ) -> dict:
     detail_data = extract_detail_data(existing_app_detail)
     basic_info = detail_data.get("app_basic_info") or {}
-    return {
-        "default_lan": _text(basic_info.get("default_lan")) or "zh_CN",
-        "pkg_mode": basic_info.get("pkg_mode", 0) or 0,
-        "pkgInstallMode": package_install_mode,
-        "inAppPayment": basic_info.get("inAppPayment", 0) or 0,
-        "category_id": basic_info.get("category_id") if category_id is None else category_id,
-        "website": _text(basic_info.get("website")) if website is None else website.strip(),
-        "region": region or _text(basic_info.get("region")) or "1",
-    }
+    reused = dict(basic_info) if isinstance(basic_info, dict) else {}
+    reused["default_lan"] = _text(reused.get("default_lan")) or "zh_CN"
+    reused["pkg_mode"] = reused.get("pkg_mode", 0) or 0
+    reused["pkgInstallMode"] = package_install_mode
+    reused["inAppPayment"] = reused.get("inAppPayment", 0) or 0
+    reused["category_id"] = reused.get("category_id") if category_id is None else category_id
+    reused["website"] = _text(reused.get("website")) if website is None else website.strip()
+    reused["region"] = region or _text(reused.get("region")) or "1"
+    return reused
 
 
 def build_reused_fit_info(
@@ -210,8 +293,8 @@ def build_reused_fit_info(
     normalized_region_codes = [] if replace_fit_values else _code_items(fit_info.get("region"))
     if not normalized_region_codes:
         normalized_region_codes = [str(code) for code in region_codes] or ["1"]
-    baseline_ids = [] if replace_fit_values else list(_csv_tokens(fit_info.get("baseline")))
-    unsupported_ids = [] if replace_fit_values else list(_csv_tokens(fit_info.get("unsupportBaseline")))
+    baseline_ids = [] if replace_fit_values else _id_items(fit_info.get("baseline"))
+    unsupported_ids = [] if replace_fit_values else _id_items(fit_info.get("unsupportBaseline"))
     cpu_clip_codes = _code_items(fit_info.get("cpu_clip"))
     motherboard_codes = _code_items(fit_info.get("motherboard"))
 
@@ -236,8 +319,8 @@ def build_reused_fit_info(
 
     return {
         "system_mode": [{"code": _coerce_code(code)} for code in system_mode_codes],
-        "baseline": baseline_ids,
-        "unsupportBaseline": unsupported_ids,
+        "baseline": baseline_id_objects(baseline_ids),
+        "unsupportBaseline": baseline_id_objects(unsupported_ids),
         "system_platform": [{"code": _coerce_code(code)} for code in system_platform_codes],
         "region": [{"code": _coerce_code(code)} for code in normalized_region_codes],
         "arch": [{"code": _coerce_code(code)} for code in arch_codes],
@@ -251,12 +334,20 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
     sup_sys_codes = list(_csv_tokens(origin_pkg.get("supSys")))
     if not sup_sys_codes:
         sup_sys_codes = _code_items(origin_pkg.get("system_platform"))
+    if not sup_sys_codes:
+        sup_sys_codes = _baseline_system_codes(origin_pkg.get("baseline"))
     baseline_ids = list(_csv_tokens(origin_pkg.get("supBlineVer")))
     if not baseline_ids:
-        baseline_ids = list(_csv_tokens(origin_pkg.get("baseline")))
+        baseline_ids = _id_items(origin_pkg.get("baseline"))
     unsupported_ids = list(_csv_tokens(origin_pkg.get("unsupportBlineVers")))
     if not unsupported_ids:
-        unsupported_ids = list(_csv_tokens(origin_pkg.get("unsupportBaseline")))
+        unsupported_ids = _id_items(origin_pkg.get("unsupportBaseline"))
+    baseline_entries = _normalize_baseline_entries(origin_pkg.get("baseline"), sup_sys_codes, baseline_ids)
+    unsupported_entries = _normalize_baseline_entries(
+        origin_pkg.get("unsupportBaseline"),
+        sup_sys_codes,
+        unsupported_ids,
+    )
 
     return {
         "pkg_name": _text(origin_pkg.get("pkg_name")),
@@ -273,9 +364,9 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
         "index": origin_pkg.get("index"),
         "system_platform": sup_sys_codes,
         "supSys": ",".join(sup_sys_codes),
-        "baseline": baseline_ids,
+        "baseline": baseline_entries,
         "supBlineVer": ",".join(baseline_ids),
-        "unsupportBaseline": unsupported_ids,
+        "unsupportBaseline": unsupported_entries,
         "unsupportBlineVers": ",".join(unsupported_ids),
         "systemStr": _text(origin_pkg.get("systemStr")),
     }
@@ -291,6 +382,50 @@ def _origin_pkg_identity(origin_pkg: dict) -> tuple[str, str, str, str]:
     )
 
 
+def _origin_pkg_package_identity(origin_pkg: dict) -> tuple[str, str, str]:
+    normalized = normalize_origin_pkg(origin_pkg)
+    return (
+        _text(normalized.get("pkg_name")),
+        _text(normalized.get("pkg_arch")),
+        _text(normalized.get("pkgType")),
+    )
+
+
+def _entry_system_code(entry: Any) -> str:
+    if isinstance(entry, dict):
+        return _text(entry.get("system_platform")) or _text(entry.get("systemPlatform"))
+    return ""
+
+
+def _remove_origin_pkg_systems(origin_pkg: dict, system_codes: set[str]) -> dict:
+    normalized = normalize_origin_pkg(origin_pkg)
+    remaining_codes = [
+        code
+        for code in (normalized.get("system_platform") or [])
+        if _text(code) not in system_codes
+    ]
+    if len(remaining_codes) == len(normalized.get("system_platform") or []):
+        return normalized
+
+    baseline_entries = [
+        entry
+        for entry in (normalized.get("baseline") or [])
+        if _entry_system_code(entry) not in system_codes
+    ]
+    unsupported_entries = [
+        entry
+        for entry in (normalized.get("unsupportBaseline") or [])
+        if _entry_system_code(entry) not in system_codes
+    ]
+    normalized["system_platform"] = remaining_codes
+    normalized["supSys"] = ",".join(remaining_codes)
+    normalized["baseline"] = baseline_entries
+    normalized["supBlineVer"] = ",".join(_id_items(baseline_entries))
+    normalized["unsupportBaseline"] = unsupported_entries
+    normalized["unsupportBlineVers"] = ",".join(_id_items(unsupported_entries))
+    return normalized
+
+
 def merge_origin_pkgs(existing_app_detail: dict | None, new_origin_pkgs: list[dict]) -> list[dict]:
     detail_data = extract_detail_data(existing_app_detail)
     merged = [
@@ -300,12 +435,23 @@ def merge_origin_pkgs(existing_app_detail: dict | None, new_origin_pkgs: list[di
     for origin_pkg in new_origin_pkgs:
         normalized = normalize_origin_pkg(origin_pkg)
         identity = _origin_pkg_identity(normalized)
+        package_identity = _origin_pkg_package_identity(normalized)
+        replacement_codes = {_text(code) for code in (normalized.get("system_platform") or []) if _text(code)}
+        next_merged: list[dict] = []
         for index, existing in enumerate(merged):
             if _origin_pkg_identity(existing) == identity:
-                merged[index] = normalized
+                next_merged.append(normalized)
+                next_merged.extend(merged[index + 1 :])
                 break
+            if replacement_codes and _origin_pkg_package_identity(existing) == package_identity:
+                trimmed = _remove_origin_pkg_systems(existing, replacement_codes)
+                if trimmed.get("system_platform"):
+                    next_merged.append(trimmed)
+                continue
+            next_merged.append(existing)
         else:
-            merged.append(normalized)
+            next_merged.append(normalized)
+        merged = next_merged
 
     for index, origin_pkg in enumerate(merged):
         origin_pkg["index"] = index

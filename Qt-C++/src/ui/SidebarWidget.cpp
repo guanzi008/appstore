@@ -45,6 +45,24 @@ QString appIdentity(const QJsonObject &app)
     return app.value(QStringLiteral("app_id")).toString(app.value(QStringLiteral("id")).toString()).trimmed();
 }
 
+QString groupSelectedAppId(const QJsonObject &group)
+{
+    QString appId = group.value(QStringLiteral("selected_match_app_id")).toString().trimmed();
+    if (!appId.isEmpty()) {
+        return appId;
+    }
+    const QJsonArray matches = group.value(QStringLiteral("existing_matches")).toArray();
+    if (matches.size() == 1) {
+        appId = matches.first().toObject().value(QStringLiteral("app_id")).toString().trimmed();
+    }
+    return appId;
+}
+
+bool groupTargetsOnlineApp(const QJsonObject &group)
+{
+    return group.value(QStringLiteral("online_only")).toBool(false) || !groupSelectedAppId(group).isEmpty();
+}
+
 QString displayAppTitle(const QJsonObject &app)
 {
     const QString appName = app.value(QStringLiteral("app_name")).toString().trimmed();
@@ -253,27 +271,33 @@ void SidebarWidget::renderGroups()
         delete item;
     }
 
+    QJsonObject currentGroup;
+    QString activeOnlineAppId = m_selectedOnlineAppId;
+
     if (!m_groups.isEmpty()) {
-        QJsonObject group;
         for (const QJsonValue &value : m_groups) {
             const QJsonObject candidate = value.toObject();
             if (candidate.value(QStringLiteral("key")).toString() == m_currentKey) {
-                group = candidate;
+                currentGroup = candidate;
                 break;
             }
         }
-        if (group.isEmpty()) {
-            group = m_groups.first().toObject();
+        if (currentGroup.isEmpty()) {
+            currentGroup = m_groups.first().toObject();
         }
 
-        const QString key = group.value(QStringLiteral("key")).toString();
-        const QString arches = AppJson::displayArches(group);
-        const bool onlineOnly = group.value(QStringLiteral("online_only")).toBool(false);
-        const QString status = group.value(QStringLiteral("status_str")).toString().trimmed();
+        const QString groupAppId = groupSelectedAppId(currentGroup);
+        if (!groupAppId.isEmpty()) {
+            activeOnlineAppId = groupAppId;
+        }
+
+        const QString key = currentGroup.value(QStringLiteral("key")).toString();
+        const QString arches = AppJson::displayArches(currentGroup);
+        const QString status = currentGroup.value(QStringLiteral("status_str")).toString().trimmed();
         const QString subtitle = status.isEmpty() ? arches : status;
-        if (!onlineOnly) {
+        if (!groupTargetsOnlineApp(currentGroup)) {
             auto *button = new QPushButton(
-                elidedSidebarText(this, QStringLiteral("📦 %1  %2").arg(AppJson::displayName(group), subtitle)),
+                elidedSidebarText(this, QStringLiteral("📦 %1  %2").arg(AppJson::displayName(currentGroup), subtitle)),
                 this);
             button->setProperty("class", QStringLiteral("AppRow"));
             button->setCheckable(true);
@@ -287,6 +311,7 @@ void SidebarWidget::renderGroups()
         }
     }
 
+    bool renderedActiveOnlineApp = false;
     if (m_onlineApps.isEmpty()) {
         if (m_onlineAppsLoading) {
             m_groupLayout->addWidget(makeSidebarHint(QStringLiteral("正在加载我的应用..."), this));
@@ -308,7 +333,9 @@ void SidebarWidget::renderGroups()
             auto *button = new QPushButton(appRowText(this, title, subtitle), this);
             button->setProperty("class", QStringLiteral("OnlineAppRow"));
             button->setCheckable(true);
-            button->setChecked(!appId.isEmpty() && appId == m_selectedOnlineAppId);
+            const bool checked = !appId.isEmpty() && appId == activeOnlineAppId;
+            button->setChecked(checked);
+            renderedActiveOnlineApp = renderedActiveOnlineApp || checked;
             button->setCursor(Qt::PointingHandCursor);
             button->setMinimumHeight(30);
             button->setToolTip(QStringLiteral("%1\n%2\n状态：%3\napp_id: %4")
@@ -319,6 +346,19 @@ void SidebarWidget::renderGroups()
                 emit onlineAppSelected(app);
             });
             m_groupLayout->addWidget(button);
+        }
+        if (!activeOnlineAppId.isEmpty() && !renderedActiveOnlineApp && !currentGroup.isEmpty()) {
+            const QString title = AppJson::displayName(currentGroup);
+            const QString subtitle = currentGroup.value(QStringLiteral("status_str")).toString(QStringLiteral("已选择")).trimmed();
+            auto *button = new QPushButton(appRowText(this, title, subtitle), this);
+            button->setProperty("class", QStringLiteral("OnlineAppRow"));
+            button->setCheckable(true);
+            button->setChecked(true);
+            button->setCursor(Qt::PointingHandCursor);
+            connect(button, &QPushButton::clicked, this, [this, key = currentGroup.value(QStringLiteral("key")).toString()]() {
+                emit groupSelected(key);
+            });
+            m_groupLayout->insertWidget(0, button);
         }
         if (m_onlineAppsLoading) {
             m_groupLayout->addWidget(makeSidebarHint(QStringLiteral("正在加载更多..."), this));
