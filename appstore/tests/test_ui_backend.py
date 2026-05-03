@@ -250,19 +250,31 @@ class UiCppBridgeOnlineDetailTests(unittest.TestCase):
                     asset_dir=None,
                 )
 
-        self.assertTrue(group["auto_matched_online_app"])
-        self.assertEqual(group["selected_match_app_id"], "1001")
-        self.assertEqual(group["submission_mode"], "update")
-        self.assertEqual(group["app_name_zh"], "LabelNova")
-        self.assertEqual(group["icon_path"], "/tmp/online-labelnova.png")
-        self.assertEqual(group["packages"][0]["icon_path"], "/tmp/online-labelnova.png")
-        self.assertEqual(group["screenshot_paths"], ["/tmp/online-shot-1.png", "/tmp/online-shot-2.png"])
-        self.assertEqual(group["packages"][0]["path"], str(package_path))
+            self.assertTrue(group["auto_matched_online_app"])
+            self.assertEqual(group["selected_match_app_id"], "1001")
+            self.assertEqual(group["submission_mode"], "update")
+            self.assertEqual(group["app_name_zh"], "LabelNova")
+            self.assertEqual(group["icon_path"], "/tmp/online-labelnova.png")
+            self.assertEqual(group["packages"][0]["icon_path"], "/tmp/online-labelnova.png")
+            self.assertEqual(group["screenshot_paths"], ["/tmp/online-shot-1.png", "/tmp/online-shot-2.png"])
+            self.assertEqual(len(group["packages"]), 2)
+            self.assertEqual(group["packages"][0]["path"], str(package_path))
+            self.assertEqual(group["packages"][0]["arch"], "amd64")
+            self.assertEqual(group["packages"][1]["arch"], "arm64")
+            self.assertTrue(group["packages"][1]["online"])
 
-        targets = [target for target in group["targets"] if target["package_path"] == str(package_path)]
-        self.assertTrue(any(target["code"] == "21" and target["selected"] for target in targets))
-        self.assertFalse(any(target["code"] == "11" and target["selected"] for target in targets))
-        self.assertTrue(all(target["package_arch"] == "amd64" for target in targets))
+            targets = [target for target in group["targets"] if target["package_path"] == str(package_path)]
+            self.assertTrue(any(target["code"] == "21" and target["selected"] for target in targets))
+            self.assertFalse(any(target["code"] == "11" and target["selected"] for target in targets))
+            self.assertTrue(all(target["package_arch"] == "amd64" for target in targets))
+            online_package_path = group["packages"][1]["path"]
+            online_targets = [target for target in group["targets"] if target["package_path"] == online_package_path]
+            self.assertTrue(any(target["code"] == "11" and target["selected"] for target in online_targets))
+
+            with patch("ui.cpp_bridge.analyze_package_group", return_value=package_group):
+                payload_group = _group_payload_to_package_group(group)
+            self.assertEqual(len(payload_group.packages), 2)
+            self.assertEqual([package.pkg_arch for package in payload_group.packages], ["amd64", "arm64"])
 
     def test_online_app_detail_is_exposed_as_package_rows_per_arch(self) -> None:
         cache = CapabilityCache(

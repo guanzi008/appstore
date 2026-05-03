@@ -746,50 +746,97 @@ def _dedupe_json_strings(values: list[object]) -> list[str]:
     return result
 
 
-def _local_targets_from_online_group(base_group: dict, online_group: dict) -> list[dict]:
+def _remap_target_to_package(target: dict, package: dict) -> dict:
+    remapped = dict(target)
+    remapped["package_path"] = str(package.get("path", "")).strip()
+    remapped["package_label"] = str(package.get("file_name") or package.get("pkg_name") or target.get("package_label") or "").strip()
+    remapped["package_arch"] = str(package.get("arch") or target.get("package_arch") or "").strip()
+    return remapped
+
+
+def _dedupe_target_rows(targets: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for target in targets:
+        key = (
+            str(target.get("package_path", "")).strip(),
+            str(target.get("code", "")).strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(target)
+    return result
+
+
+def _packages_with_online_remainder(base_group: dict, online_group: dict) -> list[dict]:
+    packages = _local_packages_with_online_icon(base_group, online_group)
+    local_arch_keys = {
+        _normalized_arch_key(package.get("arch"))
+        for package in packages
+        if _normalized_arch_key(package.get("arch"))
+    }
+    for online_package in online_group.get("packages", []) or []:
+        if not isinstance(online_package, dict):
+            continue
+        online_arch_key = _normalized_arch_key(online_package.get("arch"))
+        if online_arch_key and online_arch_key in local_arch_keys:
+            continue
+        packages.append(dict(online_package))
+    return packages
+
+
+def _targets_for_auto_matched_packages(base_group: dict, online_group: dict, packages: list[dict]) -> list[dict]:
     base_targets = [value for value in base_group.get("targets", []) if isinstance(value, dict)]
     online_targets = [value for value in online_group.get("targets", []) if isinstance(value, dict)]
-    packages = [value for value in base_group.get("packages", []) if isinstance(value, dict)]
     if not packages or not online_targets:
         return base_targets
 
     remapped_targets: list[dict] = []
-    used_base_paths: set[str] = set()
+    local_paths = {
+        str(package.get("path", "")).strip()
+        for package in base_group.get("packages", [])
+        if isinstance(package, dict)
+    }
     for package in packages:
         package_path = str(package.get("path", "")).strip()
         if not package_path:
             continue
         package_arch = str(package.get("arch", "")).strip()
         package_arch_key = _normalized_arch_key(package_arch)
-        matched_targets = [
-            target
-            for target in online_targets
-            if not package_arch_key or _normalized_arch_key(target.get("package_arch")) == package_arch_key
-        ]
-        if not matched_targets and len(packages) == 1:
+
+        if package_path in local_paths:
+            matched_targets = [
+                target
+                for target in online_targets
+                if not package_arch_key or _normalized_arch_key(target.get("package_arch")) == package_arch_key
+            ]
+        else:
+            matched_targets = [
+                target
+                for target in online_targets
+                if str(target.get("package_path", "")).strip() == package_path
+            ]
+            if not matched_targets:
+                matched_targets = [
+                    target
+                    for target in online_targets
+                    if package_arch_key and _normalized_arch_key(target.get("package_arch")) == package_arch_key
+                ]
+
+        if not matched_targets and len(local_paths) == 1 and package_path in local_paths and len(packages) == 1:
             matched_targets = online_targets
         if matched_targets:
             for target in matched_targets:
-                remapped = dict(target)
-                remapped["package_path"] = package_path
-                remapped["package_label"] = str(package.get("file_name") or package.get("pkg_name") or target.get("package_label") or "").strip()
-                remapped["package_arch"] = package_arch or str(target.get("package_arch", "")).strip()
-                remapped_targets.append(remapped)
-            used_base_paths.add(package_path)
+                remapped_targets.append(_remap_target_to_package(target, package))
             continue
 
         fallback = [target for target in base_targets if str(target.get("package_path", "")).strip() == package_path]
         remapped_targets.extend(fallback)
-        used_base_paths.add(package_path)
 
     if not remapped_targets:
         return base_targets
-
-    for target in base_targets:
-        package_path = str(target.get("package_path", "")).strip()
-        if package_path and package_path not in used_base_paths:
-            remapped_targets.append(target)
-    return remapped_targets
+    return _dedupe_target_rows(remapped_targets)
 
 
 def _local_packages_with_online_icon(base_group: dict, online_group: dict) -> list[dict]:
@@ -839,13 +886,16 @@ def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> di
     online_icon_path = str(online_group.get("icon_path", "") or "").strip()
     if online_icon_path:
         merged["icon_path"] = online_icon_path
-        merged["packages"] = _local_packages_with_online_icon(base_group, online_group)
+    packages = _packages_with_online_remainder(base_group, online_group)
+    if packages:
+        merged["packages"] = packages
+        merged["pkg_arches"] = _dedupe_json_strings([package.get("arch") for package in packages])
 
     online_screenshots = [str(path).strip() for path in online_group.get("screenshot_paths", []) if str(path).strip()]
     if online_screenshots:
         merged["screenshot_paths"] = online_screenshots
 
-    merged["targets"] = _local_targets_from_online_group(base_group, online_group)
+    merged["targets"] = _targets_for_auto_matched_packages(base_group, online_group, packages)
     merged["online_packages"] = list(online_group.get("packages", []) or [])
     merged["online_selected_package_path"] = str(online_group.get("selected_package_path", "") or "")
     merged["auto_matched_online_app"] = True
@@ -1163,7 +1213,21 @@ def _group_payload_to_package_group(group_payload: dict):
         if path.exists():
             package_paths.append(path)
     if package_paths:
-        return analyze_package_group(package_paths)
+        local_group = analyze_package_group(package_paths)
+        online_group = _online_package_group_from_payload(group_payload)
+        if online_group is None:
+            return local_group
+        local_arch_keys = {
+            _normalized_arch_key(package.pkg_arch)
+            for package in local_group.packages
+            if _normalized_arch_key(package.pkg_arch)
+        }
+        online_remainder = tuple(
+            package
+            for package in online_group.packages
+            if _normalized_arch_key(package.pkg_arch) not in local_arch_keys
+        )
+        return PackageGroup(packages=local_group.packages + online_remainder)
     online_group = _online_package_group_from_payload(group_payload)
     if online_group is not None:
         return online_group
