@@ -29,6 +29,7 @@ from ui.preferences import PreferenceStore, UIPreferences
 from ui.cpp_bridge import (
     _group_payload_to_package_group,
     _group_payload_to_targets,
+    _group_to_json,
     _online_group_from_detail,
     _sync_existing_detail_assets,
 )
@@ -75,6 +76,11 @@ class _NoUploadSubmitClient:
     def submit_payload(self, payload: dict):
         self.payload = payload
         return {"ok": True, "datas": {"app_id": "42"}}
+
+
+class _DetailClient:
+    def __init__(self) -> None:
+        self.session = object()
 
 
 class UiBackendCacheTests(unittest.TestCase):
@@ -147,6 +153,117 @@ class UiPreferencesTests(unittest.TestCase):
 
 
 class UiCppBridgeOnlineDetailTests(unittest.TestCase):
+    def test_local_package_auto_match_loads_online_assets_and_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            package_path = temp_root / "labelnova_1.0.4-1_amd64.deb"
+            package_path.write_bytes(b"deb")
+            package_group = _make_package_group(package_path, pkg_name="labelnova", pkg_version="1.0.4-1")
+            cache = CapabilityCache(
+                generated_at="2026-04-27T18:00:00+08:00",
+                deb_system_lines={
+                    "11": SystemLine(code="11", label="社区版V23", family="deb"),
+                    "21": SystemLine(code="21", label="专业版V25", family="deb"),
+                },
+                linglong_system_lines={},
+                baseline_options={
+                    "deb:11": (BaselineOption(system_line_code="11", baseline_id="2301", minor_version="23.0.1"),),
+                    "deb:21": (BaselineOption(system_line_code="21", baseline_id="2501", minor_version="25.0.1"),),
+                },
+                arch_options={
+                    "3": StoreAdaptOption(code="3", label="arm64"),
+                    "4": StoreAdaptOption(code="4", label="x86"),
+                },
+            )
+            match = StoreAppMatch(
+                app_id="1001",
+                detail_id="detail-1001",
+                pkg_name="labelnova",
+                app_name="LabelNova",
+            )
+            detail = {
+                "datas": {
+                    "app_basic_info": {"pkgInstallMode": 1},
+                    "app_fit_info": {
+                        "arch": [{"code": 3}, {"code": 4}],
+                        "system_platform": [{"code": 11}, {"code": 21}],
+                        "baseline": ["2301", "2501"],
+                    },
+                    "app_origin_pkgs": [
+                        {
+                            "pkg_name": "labelnova",
+                            "pkg_version": "1.0.4-1",
+                            "pkg_arch": "3",
+                            "pkgArch": "ARM",
+                            "system_platform": ["11"],
+                            "baseline": ["2301"],
+                        },
+                        {
+                            "pkg_name": "labelnova",
+                            "pkg_version": "1.0.4-1",
+                            "pkg_arch": "4",
+                            "pkgArch": "X86",
+                            "system_platform": ["21"],
+                            "baseline": ["2501"],
+                        },
+                    ],
+                }
+            }
+            login = LoginContext(
+                client=_DetailClient(),
+                account_label="odatacc",
+                session_state_path=None,
+                login_mode="cached",
+                can_use_browser_mode=True,
+            )
+
+            with (
+                patch("ui.cpp_bridge.detect_asset_candidates", return_value=(None, ())),
+                patch("ui.cpp_bridge._extract_initial_icon", return_value=None),
+                patch("ui.cpp_bridge._extract_package_icon", return_value=None),
+                patch("ui.cpp_bridge.find_existing_apps", return_value=(match,)),
+                patch("ui.cpp_bridge.fetch_existing_app_detail", return_value=detail),
+                patch(
+                    "ui.cpp_bridge.build_existing_detail_editor_defaults",
+                    return_value={
+                        "app_name_zh": "LabelNova",
+                        "website": "https://mm.md/p/",
+                        "short_desc_zh": "开源标签工具",
+                        "full_desc_zh": "条码标签设计与打印工具",
+                        "category_id": "1",
+                        "region_codes": ["1"],
+                    },
+                ),
+                patch(
+                    "ui.cpp_bridge._sync_existing_detail_assets",
+                    return_value={
+                        "icon_path": "/tmp/online-labelnova.png",
+                        "screenshot_paths": ["/tmp/online-shot-1.png", "/tmp/online-shot-2.png"],
+                        "asset_warnings": [],
+                    },
+                ),
+            ):
+                group = _group_to_json(
+                    package_group,
+                    login_context=login,
+                    capability_cache=cache,
+                    asset_dir=None,
+                )
+
+        self.assertTrue(group["auto_matched_online_app"])
+        self.assertEqual(group["selected_match_app_id"], "1001")
+        self.assertEqual(group["submission_mode"], "update")
+        self.assertEqual(group["app_name_zh"], "LabelNova")
+        self.assertEqual(group["icon_path"], "/tmp/online-labelnova.png")
+        self.assertEqual(group["packages"][0]["icon_path"], "/tmp/online-labelnova.png")
+        self.assertEqual(group["screenshot_paths"], ["/tmp/online-shot-1.png", "/tmp/online-shot-2.png"])
+        self.assertEqual(group["packages"][0]["path"], str(package_path))
+
+        targets = [target for target in group["targets"] if target["package_path"] == str(package_path)]
+        self.assertTrue(any(target["code"] == "21" and target["selected"] for target in targets))
+        self.assertFalse(any(target["code"] == "11" and target["selected"] for target in targets))
+        self.assertTrue(all(target["package_arch"] == "amd64" for target in targets))
+
     def test_online_app_detail_is_exposed_as_package_rows_per_arch(self) -> None:
         cache = CapabilityCache(
             generated_at="2026-04-27T18:00:00+08:00",

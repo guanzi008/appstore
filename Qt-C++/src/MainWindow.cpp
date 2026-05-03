@@ -623,10 +623,15 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         applySessionData(data);
         m_groups = data.value(QStringLiteral("groups")).toArray();
         if (!m_groups.isEmpty()) {
-            setCurrentGroup(m_groups.first().toObject());
-            m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("done"), QStringLiteral("当前应用"));
+            const QJsonObject group = m_groups.first().toObject();
+            const bool autoMatched = group.value(QStringLiteral("auto_matched_online_app")).toBool(false);
+            setCurrentGroup(group);
+            m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("done"), autoMatched ? QStringLiteral("自动匹配") : QStringLiteral("当前应用"));
             m_workflowBar->setStepStates(StepState::Done, StepState::Idle, StepState::Idle, StepState::Idle);
-            m_workflowBar->setStatusText(QStringLiteral("解析完成，已载入当前应用。"));
+            m_workflowBar->setStatusText(
+                autoMatched
+                    ? QStringLiteral("解析完成，已按包名匹配我的应用，并同步线上资料、素材与适配项。")
+                    : QStringLiteral("解析完成，已载入当前应用。"));
             if (m_autoPilotCheck->isChecked()) {
                 preprocessAssets();
             }

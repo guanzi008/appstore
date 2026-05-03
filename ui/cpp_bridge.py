@@ -713,6 +713,178 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
     }
 
 
+def _normalized_arch_key(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    aliases = {
+        "x86_64": "x86",
+        "amd64": "x86",
+        "x64": "x86",
+        "x86": "x86",
+        "i386": "x86",
+        "i686": "x86",
+        "aarch64": "arm64",
+        "arm": "arm64",
+        "arm64": "arm64",
+        "armv8": "arm64",
+        "loongarch64": "loong64",
+        "loong64": "loong64",
+        "loong": "loong64",
+        "sw_64": "sw64",
+        "sw64": "sw64",
+    }
+    return aliases.get(text, text)
+
+
+def _dedupe_json_strings(values: list[object]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _local_targets_from_online_group(base_group: dict, online_group: dict) -> list[dict]:
+    base_targets = [value for value in base_group.get("targets", []) if isinstance(value, dict)]
+    online_targets = [value for value in online_group.get("targets", []) if isinstance(value, dict)]
+    packages = [value for value in base_group.get("packages", []) if isinstance(value, dict)]
+    if not packages or not online_targets:
+        return base_targets
+
+    remapped_targets: list[dict] = []
+    used_base_paths: set[str] = set()
+    for package in packages:
+        package_path = str(package.get("path", "")).strip()
+        if not package_path:
+            continue
+        package_arch = str(package.get("arch", "")).strip()
+        package_arch_key = _normalized_arch_key(package_arch)
+        matched_targets = [
+            target
+            for target in online_targets
+            if not package_arch_key or _normalized_arch_key(target.get("package_arch")) == package_arch_key
+        ]
+        if not matched_targets and len(packages) == 1:
+            matched_targets = online_targets
+        if matched_targets:
+            for target in matched_targets:
+                remapped = dict(target)
+                remapped["package_path"] = package_path
+                remapped["package_label"] = str(package.get("file_name") or package.get("pkg_name") or target.get("package_label") or "").strip()
+                remapped["package_arch"] = package_arch or str(target.get("package_arch", "")).strip()
+                remapped_targets.append(remapped)
+            used_base_paths.add(package_path)
+            continue
+
+        fallback = [target for target in base_targets if str(target.get("package_path", "")).strip() == package_path]
+        remapped_targets.extend(fallback)
+        used_base_paths.add(package_path)
+
+    if not remapped_targets:
+        return base_targets
+
+    for target in base_targets:
+        package_path = str(target.get("package_path", "")).strip()
+        if package_path and package_path not in used_base_paths:
+            remapped_targets.append(target)
+    return remapped_targets
+
+
+def _local_packages_with_online_icon(base_group: dict, online_group: dict) -> list[dict]:
+    packages = [dict(value) for value in base_group.get("packages", []) if isinstance(value, dict)]
+    online_icon_path = str(online_group.get("icon_path", "") or "").strip()
+    if not online_icon_path:
+        return packages
+    for package in packages:
+        package["icon_path"] = online_icon_path
+    return packages
+
+
+def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> dict:
+    merged = dict(base_group)
+    always_copy_keys = (
+        "app_name_zh",
+        "website",
+        "short_desc_zh",
+        "full_desc_zh",
+        "note_zh",
+        "app_name_en",
+        "short_desc_en",
+        "full_desc_en",
+        "note_en",
+        "manual_en_edited",
+        "metadata_edited",
+        "category_id",
+        "region_codes",
+        "replace_assets",
+        "existing_matches",
+        "selected_match_app_id",
+        "submission_mode",
+        "cpu_clip_options",
+        "cpu_clip_codes",
+        "motherboard_options",
+        "motherboard_codes",
+    )
+    for key in always_copy_keys:
+        if key in online_group:
+            merged[key] = online_group[key]
+
+    for key in ("display_name", "short_description", "full_description", "homepage"):
+        value = str(online_group.get(key, "") or "").strip()
+        if value:
+            merged[key] = value
+
+    online_icon_path = str(online_group.get("icon_path", "") or "").strip()
+    if online_icon_path:
+        merged["icon_path"] = online_icon_path
+        merged["packages"] = _local_packages_with_online_icon(base_group, online_group)
+
+    online_screenshots = [str(path).strip() for path in online_group.get("screenshot_paths", []) if str(path).strip()]
+    if online_screenshots:
+        merged["screenshot_paths"] = online_screenshots
+
+    merged["targets"] = _local_targets_from_online_group(base_group, online_group)
+    merged["online_packages"] = list(online_group.get("packages", []) or [])
+    merged["online_selected_package_path"] = str(online_group.get("selected_package_path", "") or "")
+    merged["auto_matched_online_app"] = True
+
+    base_warnings = list(base_group.get("asset_warnings", []) or [])
+    online_warnings = list(online_group.get("asset_warnings", []) or [])
+    merged["asset_warnings"] = _dedupe_json_strings(base_warnings + online_warnings)
+    return merged
+
+
+def _group_with_auto_matched_online_defaults(
+    group: dict,
+    *,
+    matches: tuple[StoreAppMatch, ...],
+    login_context,
+    capability_cache,
+) -> dict:
+    if login_context is None or len(matches) != 1:
+        return group
+    match = matches[0]
+    if not match.detail_id:
+        return group
+    try:
+        detail = fetch_existing_app_detail(login_context.client, match)
+        defaults = build_existing_detail_editor_defaults(
+            detail,
+            fallback_name=str(group.get("display_name") or match.app_name or match.pkg_name),
+        )
+        defaults.update(_sync_existing_detail_assets(match, detail, session=getattr(login_context.client, "session", None)))
+        online_group = _online_group_from_detail(match, detail, defaults, capability_cache)
+    except Exception as exc:
+        warnings = list(group.get("asset_warnings", []) or [])
+        warnings.append(f"自动匹配线上应用失败：{exc}")
+        group = dict(group)
+        group["asset_warnings"] = _dedupe_json_strings(warnings)
+        return group
+    return _merge_auto_matched_online_group(group, online_group)
+
+
 def _group_to_json(package_group, *, login_context, capability_cache, asset_dir: Path | None) -> dict:
     icon_path, screenshot_paths = detect_asset_candidates(package_group, asset_dir=asset_dir)
     asset_warnings: list[str] = []
@@ -750,7 +922,7 @@ def _group_to_json(package_group, *, login_context, capability_cache, asset_dir:
     cpu_clip_codes = _selected_codes_from_options(cpu_clip_options)
     motherboard_codes = _selected_codes_from_options(motherboard_options)
 
-    return {
+    group = {
         "key": "|".join(
             (
                 package_group.pkg_name,
@@ -791,6 +963,12 @@ def _group_to_json(package_group, *, login_context, capability_cache, asset_dir:
         "motherboard_options": list(motherboard_options),
         "motherboard_codes": list(motherboard_codes),
     }
+    return _group_with_auto_matched_online_defaults(
+        group,
+        matches=tuple(matches),
+        login_context=login_context,
+        capability_cache=capability_cache,
+    )
 
 
 def _submission_row_to_json(row: dict) -> dict:
