@@ -54,7 +54,7 @@ void ScreenshotPanel::buildUi()
     auto *titleColumn = new QVBoxLayout();
     titleColumn->setContentsMargins(0, 0, 0, 0);
     titleColumn->setSpacing(2);
-    auto *title = new QLabel(QStringLiteral("🖼️ 截图工坊（1050x700 规格预检）"), this);
+    auto *title = new QLabel(QStringLiteral("截图工坊（1050x700 规格预检）"), this);
     title->setObjectName(QStringLiteral("CardTitle"));
     m_packageLabel = new QLabel(QStringLiteral("未选择包"), this);
     m_packageLabel->setObjectName(QStringLiteral("MutedText"));
@@ -65,10 +65,10 @@ void ScreenshotPanel::buildUi()
 
     auto *buttonRow = new QHBoxLayout();
     buttonRow->setSpacing(6);
-    auto *addButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("➕ 添加截图"), this);
-    auto *pasteButton = new QPushButton(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("📁 粘贴"), this);
-    auto *placeholderButton = new QPushButton(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("📄 占位"), this);
-    auto *captureButton = new QPushButton(style()->standardIcon(QStyle::SP_ComputerIcon), QStringLiteral("🌌 自动截图"), this);
+    auto *addButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("添加截图"), this);
+    auto *pasteButton = new QPushButton(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("粘贴"), this);
+    auto *placeholderButton = new QPushButton(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("占位"), this);
+    auto *captureButton = new QPushButton(style()->standardIcon(QStyle::SP_ComputerIcon), QStringLiteral("自动截图"), this);
     for (QPushButton *button : {addButton, pasteButton, placeholderButton, captureButton}) {
         button->setCursor(Qt::PointingHandCursor);
         button->setMinimumHeight(30);
@@ -117,7 +117,7 @@ void ScreenshotPanel::buildUi()
         emit removeScreenshotRequested(m_selectedIndex);
     });
     footerRow->addWidget(m_removeButton);
-    auto *preprocessButton = new QPushButton(style()->standardIcon(QStyle::SP_DialogApplyButton), QStringLiteral("✓ 预处理素材"), this);
+    auto *preprocessButton = new QPushButton(style()->standardIcon(QStyle::SP_DialogApplyButton), QStringLiteral("预处理素材"), this);
     preprocessButton->setCursor(Qt::PointingHandCursor);
     preprocessButton->setMinimumHeight(30);
     connect(preprocessButton, &QPushButton::clicked, this, &ScreenshotPanel::preprocessRequested);

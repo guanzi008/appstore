@@ -31,11 +31,11 @@ QString appRowText(const QWidget *widget, const QString &title, const QString &s
 {
     const QString statusText = status.trimmed();
     if (statusText.isEmpty()) {
-        return elidedSidebarText(widget, QStringLiteral("📦 %1").arg(title));
+        return elidedSidebarText(widget, title);
     }
     const int statusWidth = widget->fontMetrics().horizontalAdvance(statusText) + 18;
     const int titleWidth = qMax(90, 188 - statusWidth);
-    return QStringLiteral("📦 %1  %2").arg(
+    return QStringLiteral("%1  %2").arg(
         widget->fontMetrics().elidedText(title.simplified(), Qt::ElideRight, titleWidth),
         statusText);
 }
@@ -155,7 +155,7 @@ void SidebarWidget::buildUi()
     appsScroll->setWidget(appsContainer);
     layout->addWidget(appsScroll, 1);
 
-    auto *queueTitle = new QLabel(QStringLiteral("⌛ 任务队列"), this);
+    auto *queueTitle = new QLabel(QStringLiteral("任务队列"), this);
     queueTitle->setObjectName(QStringLiteral("SidebarSection"));
     layout->addWidget(queueTitle);
 
@@ -164,17 +164,17 @@ void SidebarWidget::buildUi()
     auto *taskLayout = new QVBoxLayout(taskCard);
     taskLayout->setContentsMargins(12, 10, 12, 10);
     taskLayout->setSpacing(7);
-    m_loginTaskLabel = makeTaskLabel(QStringLiteral("🔐 登录  ·  等待"), taskCard);
-    m_parseTaskLabel = makeTaskLabel(QStringLiteral("📦 解析  ·  等待"), taskCard);
-    m_captureTaskLabel = makeTaskLabel(QStringLiteral("🖼️ 截图  ·  等待"), taskCard);
-    m_submitTaskLabel = makeTaskLabel(QStringLiteral("🚀 提交  ·  等待"), taskCard);
+    m_loginTaskLabel = makeTaskLabel(QStringLiteral("登录  ·  等待"), taskCard);
+    m_parseTaskLabel = makeTaskLabel(QStringLiteral("解析  ·  等待"), taskCard);
+    m_captureTaskLabel = makeTaskLabel(QStringLiteral("截图  ·  等待"), taskCard);
+    m_submitTaskLabel = makeTaskLabel(QStringLiteral("提交  ·  等待"), taskCard);
     taskLayout->addWidget(m_loginTaskLabel);
     taskLayout->addWidget(m_parseTaskLabel);
     taskLayout->addWidget(m_captureTaskLabel);
     taskLayout->addWidget(m_submitTaskLabel);
     layout->addWidget(taskCard);
 
-    auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("ℹ️ 偏好设置"), this);
+    auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("偏好设置"), this);
     settingsButton->setObjectName(QStringLiteral("SidebarPlain"));
     settingsButton->setCursor(Qt::PointingHandCursor);
     layout->addWidget(settingsButton);
@@ -297,7 +297,7 @@ void SidebarWidget::renderGroups()
         const QString subtitle = status.isEmpty() ? arches : status;
         if (!groupTargetsOnlineApp(currentGroup)) {
             auto *button = new QPushButton(
-                elidedSidebarText(this, QStringLiteral("📦 %1  %2").arg(AppJson::displayName(currentGroup), subtitle)),
+                elidedSidebarText(this, QStringLiteral("%1  %2").arg(AppJson::displayName(currentGroup), subtitle)),
                 this);
             button->setProperty("class", QStringLiteral("AppRow"));
             button->setCheckable(true);
@@ -394,16 +394,16 @@ QLabel *SidebarWidget::taskLabelForKey(const QString &taskKey) const
 QString SidebarWidget::taskTitle(const QString &taskKey)
 {
     if (taskKey == QStringLiteral("login")) {
-        return QStringLiteral("🔐 登录");
+        return QStringLiteral("登录");
     }
     if (taskKey == QStringLiteral("parse")) {
-        return QStringLiteral("📦 解析");
+        return QStringLiteral("解析");
     }
     if (taskKey == QStringLiteral("capture")) {
-        return QStringLiteral("🖼️ 截图");
+        return QStringLiteral("截图");
     }
     if (taskKey == QStringLiteral("submit")) {
-        return QStringLiteral("🚀 提交");
+        return QStringLiteral("提交");
     }
     return taskKey;
 }

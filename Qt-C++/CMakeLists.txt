@@ -10,6 +10,7 @@ set(APPSTORE_INFO_ARCH "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Architecture wr
 set(APPSTORE_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(APPSTORE_RUNTIME_SHARE_DIR "${APPSTORE_APP_ROOT}/files/share/${APPSTORE_APPID}")
 set(APPSTORE_PYTHON_RUNTIME_DIR "${CMAKE_CURRENT_BINARY_DIR}/python-runtime")
+set(APPSTORE_BUNDLED_FONTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts")
 set(APPSTORE_VENDORED_PYTHON_REQUIREMENTS
     "${APPSTORE_PROJECT_ROOT}/appstore/requirements.txt"
     CACHE STRING "Semicolon-separated requirements files installed into the embedded Python runtime"
@@ -52,6 +53,8 @@ qt_add_executable(utpublisher-python-backend
 target_include_directories(utpublisher-qt-cpp PRIVATE src)
 target_compile_definitions(utpublisher-qt-cpp PRIVATE
     APPSTORE_REPO_ROOT="${APPSTORE_RUNTIME_REPO_ROOT}"
+    APPSTORE_BUNDLED_FONTS_DIR="${APPSTORE_BUNDLED_FONTS_DIR}"
+    APPSTORE_INSTALLED_FONTS_DIR="/${APPSTORE_RUNTIME_SHARE_DIR}/fonts"
 )
 target_link_libraries(utpublisher-qt-cpp PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets PkgConfig::DTK6WIDGET)
 
@@ -141,6 +144,14 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/${APPSTORE_APPID}.desktop"
 )
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/${APPSTORE_APPID}.svg"
     DESTINATION "${APPSTORE_APP_ROOT}/entries/icons/hicolor/scalable/apps"
+)
+install(DIRECTORY "${APPSTORE_BUNDLED_FONTS_DIR}/"
+    DESTINATION "${APPSTORE_RUNTIME_SHARE_DIR}/fonts"
+    FILES_MATCHING
+    PATTERN "*.ttf"
+    PATTERN "*.otf"
+    PATTERN "*.ttc"
+    PATTERN "*.copyright"
 )
 
 configure_file(

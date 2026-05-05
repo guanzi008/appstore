@@ -416,7 +416,7 @@ void MainWindow::buildUi()
 
     auto *header = new QHBoxLayout();
     header->setSpacing(12);
-    m_titleLabel = new QLabel(QStringLiteral("📦 应用管理 - 新建版本发布"), workspace);
+    m_titleLabel = new QLabel(QStringLiteral("应用管理 - 新建版本发布"), workspace);
     m_titleLabel->setObjectName(QStringLiteral("PageTitle"));
     header->addWidget(m_titleLabel, 1);
 
@@ -425,7 +425,7 @@ void MainWindow::buildUi()
     m_capabilityLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     header->addWidget(m_capabilityLabel);
 
-    m_autoPilotCheck = new QCheckBox(QStringLiteral("🚀 Auto-Pilot（全自动提交）"), workspace);
+    m_autoPilotCheck = new QCheckBox(QStringLiteral("Auto-Pilot（全自动提交）"), workspace);
     m_autoPilotCheck->setCursor(Qt::PointingHandCursor);
     header->addWidget(m_autoPilotCheck);
 
@@ -449,7 +449,7 @@ void MainWindow::buildUi()
     auto *dropLayout = new QVBoxLayout(dropZone);
     dropLayout->setContentsMargins(12, 6, 12, 6);
     dropLayout->setSpacing(2);
-    m_dropHintLabel = new QLabel(QStringLiteral("📥 拖拽 .deb / linglong 文件到这里进行智能解析"), dropZone);
+    m_dropHintLabel = new QLabel(QStringLiteral("拖拽 .deb / linglong 文件到这里进行智能解析"), dropZone);
     m_dropHintLabel->setObjectName(QStringLiteral("DropHint"));
     m_dropHintLabel->setAlignment(Qt::AlignCenter);
     auto *chooseButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("选择包文件"), dropZone);
@@ -803,14 +803,14 @@ void MainWindow::renderCurrentGroup()
     const bool onlineOnly = m_currentGroup.value(QStringLiteral("online_only")).toBool(false);
     const QString displayName = AppJson::displayName(m_currentGroup);
     m_titleLabel->setText(hasGroup
-                              ? QStringLiteral("📦 应用管理 - %1").arg(displayName)
-                              : QStringLiteral("📦 应用管理 - 新建版本发布"));
+                              ? QStringLiteral("应用管理 - %1").arg(displayName)
+                              : QStringLiteral("应用管理 - 新建版本发布"));
     if (onlineOnly) {
         m_dropHintLabel->setText(QStringLiteral("已选择我的应用：%1。可提交资料/截图/适配项更新，拖入新包则更新安装包").arg(displayName));
     } else {
         m_dropHintLabel->setText(hasGroup
                                      ? QStringLiteral("已载入 %1 个包：%2").arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()).arg(AppJson::stringValue(m_currentGroup, QStringLiteral("pkg_name")))
-                                     : QStringLiteral("📥 拖拽 .deb / linglong 文件到这里进行智能解析"));
+                                     : QStringLiteral("拖拽 .deb / linglong 文件到这里进行智能解析"));
     }
     m_selectedPackagePath = effectiveSelectedPackagePath(m_currentGroup, m_selectedPackagePath);
     m_metadataPanel->setGroup(m_currentGroup);

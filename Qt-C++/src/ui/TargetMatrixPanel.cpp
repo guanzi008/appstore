@@ -637,7 +637,7 @@ void TargetMatrixPanel::buildUi()
 
     auto *titleRow = new QHBoxLayout();
     titleRow->setSpacing(8);
-    auto *title = new QLabel(QStringLiteral("🔗 适配范围 - 智能匹配"), this);
+    auto *title = new QLabel(QStringLiteral("适配范围 - 智能匹配"), this);
     title->setObjectName(QStringLiteral("CardTitle"));
     titleRow->addWidget(title, 1);
     m_editButton = new QPushButton(QStringLiteral("调整"), this);

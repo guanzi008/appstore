@@ -86,7 +86,7 @@ QString packageTitle(const QJsonObject &package)
     if (!systemText.isEmpty()) {
         parts.append(systemText);
     }
-    return parts.isEmpty() ? title : QStringLiteral("📦 %1  ·  %2").arg(title, parts.join(QStringLiteral(" / ")));
+    return parts.isEmpty() ? title : QStringLiteral("%1  ·  %2").arg(title, parts.join(QStringLiteral(" / ")));
 }
 
 QJsonObject packageForPath(const QJsonObject &group, const QString &packagePath)
@@ -131,7 +131,7 @@ void MetadataPanel::buildUi()
     layout->setContentsMargins(12, 10, 12, 10);
     layout->setSpacing(5);
 
-    auto *title = new QLabel(QStringLiteral("📄 应用资料与包列表（自动填充）"), this);
+    auto *title = new QLabel(QStringLiteral("应用资料与包列表（自动填充）"), this);
     title->setObjectName(QStringLiteral("CardTitle"));
     layout->addWidget(title);
 

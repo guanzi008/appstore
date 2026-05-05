@@ -65,7 +65,7 @@ WorkflowBar::WorkflowBar(QWidget *parent)
     m_statusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(m_statusLabel, 0, Qt::AlignVCenter);
 
-    m_submitButton = new QPushButton(style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("🚀 执行全自动提交"), this);
+    m_submitButton = new QPushButton(style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("执行全自动提交"), this);
     m_submitButton->setObjectName(QStringLiteral("PrimaryAction"));
     m_submitButton->setCursor(Qt::PointingHandCursor);
     m_submitButton->setFixedHeight(38);
@@ -133,15 +133,15 @@ QString WorkflowBar::statePrefix(StepState state)
 {
     switch (state) {
     case StepState::Running:
-        return QStringLiteral("…");
+        return QStringLiteral("进行中");
     case StepState::Done:
-        return QStringLiteral("✓");
+        return QStringLiteral("完成");
     case StepState::Failed:
-        return QStringLiteral("!");
+        return QStringLiteral("失败");
     case StepState::Idle:
-        return QStringLiteral("○");
+        return QStringLiteral("待");
     }
-    return QStringLiteral("○");
+    return QStringLiteral("待");
 }
 
 QString WorkflowBar::stateProperty(StepState state)

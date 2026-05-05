@@ -37,7 +37,7 @@ void LoginDialog::buildUi()
     layout->setContentsMargins(24, 20, 24, 20);
     layout->setSpacing(16);
 
-    auto *title = new QLabel(QStringLiteral("🔐 登录应用商店账号"), this);
+    auto *title = new QLabel(QStringLiteral("登录应用商店账号"), this);
     title->setObjectName(QStringLiteral("DialogTitle"));
     layout->addWidget(title);
 
