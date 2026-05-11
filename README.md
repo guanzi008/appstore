@@ -19,6 +19,17 @@ Docs:
 
 Other repositories can use this repository as a reusable GitHub Action to update an existing deepin/UOS app store application. Build your package first, then pass the package path to the action.
 
+Verify credentials without submitting an app:
+
+```yaml
+      - name: Verify app store credentials
+        uses: guanzi008/appstore@main
+        with:
+          username: ${{ secrets.APPSTORE_USERNAME }}
+          password: ${{ secrets.APPSTORE_PASSWORD }}
+          test-only: "true"
+```
+
 ```yaml
 name: Update UOS Store App
 

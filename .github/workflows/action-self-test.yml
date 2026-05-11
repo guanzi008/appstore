@@ -1,0 +1,24 @@
+name: Action Self Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-action:
+    name: Verify reusable action credentials
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify UTPublisher action credentials
+        uses: ./
+        with:
+          username: ${{ secrets.APPSTORE_USERNAME }}
+          password: ${{ secrets.APPSTORE_PASSWORD }}
+          test-only: "true"
+          output-dir: appstore-action-self-test

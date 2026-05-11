@@ -19,6 +19,17 @@ python3 -m appstore.upload_batch --help
 
 其他项目可以直接把本仓库当作复用 Action，用于已有应用更新。调用方仓库需要先产出 `.deb`、`.uab` 或 `.layer` 包，再传给这个 Action。
 
+只验证账号和能力缓存，不提交应用：
+
+```yaml
+      - name: Verify app store credentials
+        uses: guanzi008/appstore@main
+        with:
+          username: ${{ secrets.APPSTORE_USERNAME }}
+          password: ${{ secrets.APPSTORE_PASSWORD }}
+          test-only: "true"
+```
+
 ```yaml
 name: Update UOS Store App
 
