@@ -380,6 +380,57 @@ class UiCppBridgeOnlineDetailTests(unittest.TestCase):
         self.assertTrue(str(package_group.packages[0].path).startswith("online/"))
         self.assertEqual(submit_targets[0].package_path, str(package_group.packages[0].path))
 
+    def test_online_system_line_without_baseline_stays_without_specific_version(self) -> None:
+        cache = CapabilityCache(
+            generated_at="2026-04-27T18:00:00+08:00",
+            deb_system_lines={
+                "11": SystemLine(code="11", label="社区版V23", family="deb"),
+            },
+            linglong_system_lines={},
+            baseline_options={
+                "deb:11": (
+                    BaselineOption(system_line_code="11", baseline_id="2300", minor_version="23.0"),
+                    BaselineOption(system_line_code="11", baseline_id="2303", minor_version="23.3"),
+                ),
+            },
+            arch_options={"4": StoreAdaptOption(code="4", label="x86")},
+        )
+        detail = {
+            "datas": {
+                "app_basic_info": {"pkgInstallMode": 1},
+                "app_fit_info": {"arch": [{"code": 4}], "system_platform": [{"code": 11}]},
+                "app_origin_pkgs": [
+                    {
+                        "pkg_name": "labelnova",
+                        "pkg_version": "1.0.4-1",
+                        "pkg_arch": "4",
+                        "pkgArch": "X86",
+                        "system_platform": ["11"],
+                        "systemStr": "社区版V23",
+                    },
+                ],
+            }
+        }
+
+        group = _online_group_from_detail(
+            StoreAppMatch(app_id="1001", detail_id="detail-1001", pkg_name="labelnova", app_name="LabelNova"),
+            detail,
+            {
+                "app_name_zh": "LabelNova",
+                "website": "https://mm.md/p/",
+                "short_desc_zh": "开源标签工具",
+                "full_desc_zh": "条码标签设计与打印工具",
+                "category_id": "1",
+            },
+            cache,
+        )
+
+        target = group["targets"][0]
+        self.assertEqual(target["code"], "11")
+        self.assertTrue(target["selected"])
+        self.assertEqual(target["baseline_id"], "")
+        self.assertEqual(target["selected_baseline_ids"], [])
+
     def test_sync_existing_detail_assets_preserves_store_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)

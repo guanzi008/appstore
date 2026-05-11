@@ -615,7 +615,7 @@ class GroupedSubmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "same architecture/system/version collision"):
             validate_release_group(app, release, packages, targets, inspected, _cache())
 
-    def test_validate_release_group_rejects_missing_or_invalid_baseline_when_required(self) -> None:
+    def test_validate_release_group_allows_missing_baseline_and_rejects_invalid_baseline(self) -> None:
         app = _app()
         release = _release()
         packages = (
@@ -624,8 +624,8 @@ class GroupedSubmissionTests(unittest.TestCase):
         inspected = {"pkg-a": PackageInfo("demo", "1.0.0", "amd64", 1, "hash1", Path("/tmp/demo-1.deb"))}
 
         missing_baseline_targets = {"pkg-a": (TargetRecord(30, "demo", "stable", "pkg-a", "11", baseline_id=""),)}
-        with self.assertRaisesRegex(ValidationError, "baseline required"):
-            validate_release_group(app, release, packages, missing_baseline_targets, inspected, _cache())
+        validated = validate_release_group(app, release, packages, missing_baseline_targets, inspected, _cache())
+        self.assertEqual(validated.packages[0].targets[0].baseline_id, "")
 
         invalid_baseline_targets = {"pkg-a": (TargetRecord(30, "demo", "stable", "pkg-a", "11", baseline_id="9999"),)}
         with self.assertRaisesRegex(ValidationError, "unsupported baseline"):

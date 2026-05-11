@@ -128,6 +128,7 @@ def _target_to_json(option) -> dict:
         "selected": option.selected,
         "baseline_id": option.baseline_id,
         "selected_baseline_ids": list(option.selected_baseline_ids),
+        "unsupported_baseline_ids": list(option.unsupported_baseline_ids),
         "baseline_options": [
             {
                 "id": baseline_id,
@@ -487,6 +488,14 @@ def _origin_pkg_baseline_ids(origin_pkg: dict, fit_info: dict) -> tuple[str, ...
     )
 
 
+def _origin_pkg_unsupported_baseline_ids(origin_pkg: dict, fit_info: dict) -> tuple[str, ...]:
+    return _dedupe(
+        _code_items(origin_pkg.get("unsupportBaseline"))
+        or _code_items(origin_pkg.get("unsupportBlineVers"))
+        or _code_items(fit_info.get("unsupportBaseline"))
+    )
+
+
 def _online_packages_from_detail(
     match: StoreAppMatch,
     origin_pkgs: list,
@@ -534,11 +543,13 @@ def _target_rows_for_selection(
     arch_label: str,
     selected_system_codes: tuple[str, ...],
     selected_baseline_ids: tuple[str, ...],
+    selected_unsupported_baseline_ids: tuple[str, ...],
 ) -> list[dict]:
     if capability_cache is None:
         return []
     selected_system_code_set = set(selected_system_codes)
     selected_baseline_id_set = set(selected_baseline_ids)
+    selected_unsupported_baseline_id_set = set(selected_unsupported_baseline_ids)
     system_lines = capability_cache.linglong_system_lines if package_family == "linglong" else capability_cache.deb_system_lines
     targets: list[dict] = []
     for code, system_line in system_lines.items():
@@ -551,8 +562,10 @@ def _target_rows_for_selection(
             for option in baseline_options
             if option.baseline_id in selected_baseline_id_set
         )
-        default_selected = (baseline_options[-1].baseline_id,) if baseline_options else ()
-        effective_baselines = allowed_selected or (default_selected if normalized_code in selected_system_code_set else ())
+        # The web form allows selecting a system line without selecting a
+        # concrete baseline version. Preserve that state instead of
+        # inventing the latest baseline, otherwise "社区版V23" becomes "23.3".
+        effective_baselines = allowed_selected
         targets.append(
             {
                 "package_path": package_path,
@@ -564,6 +577,11 @@ def _target_rows_for_selection(
                 "selected": normalized_code in selected_system_code_set,
                 "baseline_id": effective_baselines[0] if effective_baselines else "",
                 "selected_baseline_ids": list(effective_baselines),
+                "unsupported_baseline_ids": [
+                    option.baseline_id
+                    for option in baseline_options
+                    if option.baseline_id in selected_unsupported_baseline_id_set
+                ],
                 "baseline_options": [
                     {
                         "id": option.baseline_id,
@@ -601,6 +619,7 @@ def _online_targets_from_detail(
                     arch_label=str(package.get("arch", "")).strip(),
                     selected_system_codes=_origin_pkg_system_codes(origin_pkg, fit_info),
                     selected_baseline_ids=_origin_pkg_baseline_ids(origin_pkg, fit_info),
+                    selected_unsupported_baseline_ids=_origin_pkg_unsupported_baseline_ids(origin_pkg, fit_info),
                 )
             )
         return targets
@@ -613,6 +632,7 @@ def _online_targets_from_detail(
         arch_label=arch_label,
         selected_system_codes=_code_items(fit_info.get("system_platform")),
         selected_baseline_ids=_code_items(fit_info.get("baseline")),
+        selected_unsupported_baseline_ids=_code_items(fit_info.get("unsupportBaseline")),
     )
 
 
@@ -1252,6 +1272,11 @@ def _group_payload_to_targets(group_payload: dict) -> tuple[SystemTargetOption, 
             for value in target_payload.get("selected_baseline_ids", [])
             if str(value).strip()
         )
+        unsupported_baseline_ids = tuple(
+            str(value).strip()
+            for value in target_payload.get("unsupported_baseline_ids", [])
+            if str(value).strip()
+        )
         raw_package_path = str(target_payload.get("package_path", "")).strip()
         result.append(
             SystemTargetOption(
@@ -1265,6 +1290,7 @@ def _group_payload_to_targets(group_payload: dict) -> tuple[SystemTargetOption, 
                 selected=bool(target_payload.get("selected", False)),
                 baseline_id=str(target_payload.get("baseline_id", "")).strip(),
                 selected_baseline_ids=selected_baseline_ids,
+                unsupported_baseline_ids=unsupported_baseline_ids,
             )
         )
     return tuple(result)

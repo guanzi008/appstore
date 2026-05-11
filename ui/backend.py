@@ -85,6 +85,7 @@ class SystemTargetOption:
     selected: bool
     baseline_id: str
     selected_baseline_ids: tuple[str, ...] = ()
+    unsupported_baseline_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -384,6 +385,7 @@ def build_target_options(
                     selected=template.sup_sys_code in selected_codes,
                     baseline_id=baseline_id,
                     selected_baseline_ids=selected_baseline_ids,
+                    unsupported_baseline_ids=(),
                 )
             )
     return tuple(result)
@@ -1244,7 +1246,7 @@ def _submit_grouped_release(
                     if option.selected_baseline_ids
                     else option.baseline_id
                 ),
-                unsupport_baseline_ids=(),
+                unsupport_baseline_ids=option.unsupported_baseline_ids,
                 target_note="",
                 baseline_ids=option.selected_baseline_ids,
             )

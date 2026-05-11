@@ -2013,6 +2013,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     selected=item.checkState() == CHECKED,
                     baseline_id=baseline_id,
                     selected_baseline_ids=selected_baseline_ids,
+                    unsupported_baseline_ids=original.unsupported_baseline_ids,
                 )
             )
         return tuple(options)

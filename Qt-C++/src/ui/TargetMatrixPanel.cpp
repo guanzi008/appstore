@@ -3,8 +3,10 @@
 #include "core/AppJson.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -15,6 +17,7 @@
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+#include <QVector>
 
 namespace {
 
@@ -22,18 +25,6 @@ QString stringValue(const QJsonObject &object, const QString &key, const QString
 {
     const QString value = object.value(key).toString().trimmed();
     return value.isEmpty() ? fallback : value;
-}
-
-QStringList stringArray(const QJsonArray &array)
-{
-    QStringList result;
-    for (const QJsonValue &value : array) {
-        const QString text = value.toString().trimmed();
-        if (!text.isEmpty() && !result.contains(text)) {
-            result.append(text);
-        }
-    }
-    return result;
 }
 
 QString optionLabel(const QJsonObject &option)
@@ -80,76 +71,76 @@ QString baselineDisplayName(const QJsonObject &baseline)
     return stringValue(baseline, QStringLiteral("version"), baseline.value(QStringLiteral("id")).toString());
 }
 
-QString baselineDisplayNameById(const QJsonArray &options, const QString &baselineId)
+QString firstString(const QJsonArray &array)
 {
-    for (const QJsonValue &value : options) {
-        const QJsonObject option = value.toObject();
-        if (option.value(QStringLiteral("id")).toString() == baselineId) {
-            return baselineDisplayName(option);
+    for (const QJsonValue &value : array) {
+        const QString text = value.toString().trimmed();
+        if (!text.isEmpty()) {
+            return text;
         }
     }
-    return baselineId;
+    return {};
 }
 
-QString baselineSummary(const QJsonObject &target)
+QJsonArray singleStringArray(const QString &value)
 {
-    const QJsonArray options = target.value(QStringLiteral("baseline_options")).toArray();
-    if (options.isEmpty()) {
-        return QStringLiteral("未返回具体版本");
+    QJsonArray result;
+    const QString text = value.trimmed();
+    if (!text.isEmpty()) {
+        result.append(text);
     }
-    const QStringList selectedIds = stringArray(target.value(QStringLiteral("selected_baseline_ids")).toArray());
-    if (selectedIds.isEmpty()) {
-        return QStringLiteral("未选择具体版本");
-    }
-    QStringList labels;
-    for (const QString &id : selectedIds) {
-        labels.append(baselineDisplayNameById(options, id));
-    }
-    if (labels.size() == 1) {
-        return labels.first();
-    }
-    if (labels.size() <= 3) {
-        return QStringLiteral("已选 %1 项：%2").arg(labels.size()).arg(labels.join(QStringLiteral("、")));
-    }
-    return QStringLiteral("已选 %1 项：%2、%3、%4...").arg(labels.size()).arg(labels.at(0), labels.at(1), labels.at(2));
+    return result;
 }
 
-QString baselineTooltip(const QJsonObject &target)
+QString selectedBaselineId(const QJsonObject &target)
 {
-    const QStringList selectedIds = stringArray(target.value(QStringLiteral("selected_baseline_ids")).toArray());
-    if (selectedIds.isEmpty()) {
-        return QStringLiteral("当前系统线未选择具体版本。");
-    }
-    QStringList labels;
-    const QJsonArray options = target.value(QStringLiteral("baseline_options")).toArray();
-    for (const QString &id : selectedIds) {
-        labels.append(QStringLiteral("%1 (%2)").arg(baselineDisplayNameById(options, id), id));
-    }
-    return labels.join(QLatin1Char('\n'));
+    const QString selected = firstString(target.value(QStringLiteral("selected_baseline_ids")).toArray());
+    return selected.isEmpty() ? target.value(QStringLiteral("baseline_id")).toString().trimmed() : selected;
 }
 
-QJsonArray allBaselineIds(const QJsonArray &options)
+QString unsupportedBaselineId(const QJsonObject &target)
 {
-    QJsonArray ids;
-    for (const QJsonValue &value : options) {
-        const QString id = value.toObject().value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
-            ids.append(id);
+    return firstString(target.value(QStringLiteral("unsupported_baseline_ids")).toArray());
+}
+
+QString systemLineTitle(const QJsonObject &target)
+{
+    return stringValue(target, QStringLiteral("label"), target.value(QStringLiteral("code")).toString(QStringLiteral("-")));
+}
+
+QString systemSectionName(const QJsonObject &target)
+{
+    const QString title = systemLineTitle(target);
+    if (title.contains(QStringLiteral("专业"))) {
+        return QStringLiteral("专业版");
+    }
+    if (title.contains(QStringLiteral("社区"))) {
+        return QStringLiteral("社区版");
+    }
+    if (title.contains(QStringLiteral("教育"))) {
+        return QStringLiteral("教育版");
+    }
+    return QStringLiteral("其他版本");
+}
+
+QString baselineComboText(const QJsonObject &target, const QJsonObject &baseline)
+{
+    return QStringLiteral("%1 %2").arg(systemLineTitle(target), baselineDisplayName(baseline));
+}
+
+void setComboCurrentId(QComboBox *combo, const QString &id)
+{
+    if (combo == nullptr) {
+        return;
+    }
+    const QString selectedId = id.trimmed();
+    for (int index = 0; index < combo->count(); ++index) {
+        if (combo->itemData(index).toString() == selectedId) {
+            combo->setCurrentIndex(index);
+            return;
         }
     }
-    return ids;
-}
-
-QJsonArray latestBaselineId(const QJsonArray &options)
-{
-    QJsonArray ids;
-    if (!options.isEmpty()) {
-        const QString id = options.last().toObject().value(QStringLiteral("id")).toString().trimmed();
-        if (!id.isEmpty()) {
-            ids.append(id);
-        }
-    }
-    return ids;
+    combo->setCurrentIndex(0);
 }
 
 QLabel *captionLabel(const QString &text, QWidget *parent)
@@ -202,13 +193,6 @@ int selectedBaselineCount(const QJsonArray &targets)
         count += target.value(QStringLiteral("selected_baseline_ids")).toArray().size();
     }
     return count;
-}
-
-QString targetTitle(const QJsonObject &target)
-{
-    const QString label = stringValue(target, QStringLiteral("label"), target.value(QStringLiteral("code")).toString());
-    const QString arch = target.value(QStringLiteral("package_arch")).toString().trimmed();
-    return arch.isEmpty() ? label : QStringLiteral("%1  %2").arg(label, arch);
 }
 
 QJsonObject packageForPath(const QJsonObject &group, const QString &packagePath)
@@ -284,102 +268,6 @@ void inheritDialogStyle(QDialog *dialog, QWidget *parent)
     }
 }
 
-class BaselineSelectionDialog final : public QDialog
-{
-public:
-    BaselineSelectionDialog(const QJsonArray &options, const QJsonArray &selectedIds, QWidget *parent)
-        : QDialog(parent)
-        , m_options(options)
-    {
-        setWindowTitle(QStringLiteral("选择具体系统版本"));
-        inheritDialogStyle(this, parent);
-        resize(420, 480);
-
-        auto *layout = new QVBoxLayout(this);
-        layout->setContentsMargins(14, 12, 14, 12);
-        layout->setSpacing(8);
-
-        auto *title = new QLabel(QStringLiteral("具体系统版本"), this);
-        title->setObjectName(QStringLiteral("DialogTitle"));
-        layout->addWidget(title);
-
-        auto *toolbar = new QHBoxLayout();
-        auto *latestButton = new QPushButton(QStringLiteral("只选最新"), this);
-        auto *allButton = new QPushButton(QStringLiteral("全选"), this);
-        auto *clearButton = new QPushButton(QStringLiteral("清空"), this);
-        toolbar->addWidget(latestButton);
-        toolbar->addWidget(allButton);
-        toolbar->addWidget(clearButton);
-        toolbar->addStretch(1);
-        layout->addLayout(toolbar);
-
-        auto *scroll = new QScrollArea(this);
-        scroll->setObjectName(QStringLiteral("FlatScroll"));
-        scroll->setWidgetResizable(true);
-        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        auto *container = new QWidget(scroll);
-        auto *optionsLayout = new QVBoxLayout(container);
-        optionsLayout->setContentsMargins(0, 0, 4, 0);
-        optionsLayout->setSpacing(4);
-
-        const QStringList selected = stringArray(selectedIds);
-        for (const QJsonValue &value : options) {
-            const QJsonObject option = value.toObject();
-            const QString id = option.value(QStringLiteral("id")).toString().trimmed();
-            auto *checkBox = new QCheckBox(QStringLiteral("%1  (%2)").arg(baselineDisplayName(option), id), container);
-            checkBox->setChecked(selected.contains(id));
-            optionsLayout->addWidget(checkBox);
-            m_checkBoxes.append(checkBox);
-        }
-        optionsLayout->addStretch(1);
-        scroll->setWidget(container);
-        layout->addWidget(scroll, 1);
-
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-        layout->addWidget(buttons);
-
-        connect(latestButton, &QPushButton::clicked, this, [this]() {
-            const QJsonArray latest = latestBaselineId(m_options);
-            const QStringList ids = stringArray(latest);
-            for (int index = 0; index < m_checkBoxes.size(); ++index) {
-                const QString id = m_options.at(index).toObject().value(QStringLiteral("id")).toString().trimmed();
-                m_checkBoxes.at(index)->setChecked(ids.contains(id));
-            }
-        });
-        connect(allButton, &QPushButton::clicked, this, [this]() {
-            for (QCheckBox *checkBox : m_checkBoxes) {
-                checkBox->setChecked(true);
-            }
-        });
-        connect(clearButton, &QPushButton::clicked, this, [this]() {
-            for (QCheckBox *checkBox : m_checkBoxes) {
-                checkBox->setChecked(false);
-            }
-        });
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    }
-
-    QJsonArray selectedIds() const
-    {
-        QJsonArray result;
-        for (int index = 0; index < m_checkBoxes.size(); ++index) {
-            if (!m_checkBoxes.at(index)->isChecked()) {
-                continue;
-            }
-            const QString id = m_options.at(index).toObject().value(QStringLiteral("id")).toString().trimmed();
-            if (!id.isEmpty()) {
-                result.append(id);
-            }
-        }
-        return result;
-    }
-
-private:
-    QJsonArray m_options;
-    QVector<QCheckBox *> m_checkBoxes;
-};
-
 class TargetConfigDialog final : public QDialog
 {
 public:
@@ -391,7 +279,7 @@ public:
     {
         setWindowTitle(QStringLiteral("调整适配范围"));
         inheritDialogStyle(this, parent);
-        resize(720, 620);
+        resize(980, 650);
         buildUi();
     }
 
@@ -403,8 +291,10 @@ public:
 private:
     struct TargetBinding {
         int index = -1;
+        QString sectionName;
         QCheckBox *checkBox = nullptr;
-        QPushButton *baselineButton = nullptr;
+        QComboBox *baselineCombo = nullptr;
+        QComboBox *unsupportedCombo = nullptr;
     };
 
     struct OptionBinding {
@@ -461,17 +351,21 @@ private:
         section->setObjectName(QStringLiteral("CardTitle"));
         content->addWidget(section);
 
+        addTargetGuide(content, parent);
+
         auto *tools = new QHBoxLayout();
-        auto *selectAllButton = new QPushButton(QStringLiteral("全选系统"), parent);
+        auto *selectCommonButton = new QPushButton(QStringLiteral("勾选非其他版本"), parent);
         auto *clearButton = new QPushButton(QStringLiteral("清空系统"), parent);
-        tools->addWidget(selectAllButton);
+        tools->addWidget(selectCommonButton);
         tools->addWidget(clearButton);
         tools->addStretch(1);
         content->addLayout(tools);
 
-        connect(selectAllButton, &QPushButton::clicked, this, [this]() {
+        connect(selectCommonButton, &QPushButton::clicked, this, [this]() {
             for (const TargetBinding &binding : m_targetBindings) {
-                binding.checkBox->setChecked(true);
+                if (binding.sectionName != QStringLiteral("其他版本")) {
+                    binding.checkBox->setChecked(true);
+                }
             }
         });
         connect(clearButton, &QPushButton::clicked, this, [this]() {
@@ -490,33 +384,156 @@ private:
             return;
         }
 
+        QVector<int> professionalRows;
+        QVector<int> communityRows;
+        QVector<int> educationRows;
+        QVector<int> otherRows;
         for (int index = 0; index < targets.size(); ++index) {
             const QJsonObject target = targets.at(index).toObject();
             if (!targetMatchesPackage(target, m_selectedPackagePath)) {
                 continue;
             }
+            const QString sectionName = systemSectionName(target);
+            if (sectionName == QStringLiteral("专业版")) {
+                professionalRows.append(index);
+            } else if (sectionName == QStringLiteral("社区版")) {
+                communityRows.append(index);
+            } else if (sectionName == QStringLiteral("教育版")) {
+                educationRows.append(index);
+            } else {
+                otherRows.append(index);
+            }
+        }
+
+        addTargetSection(content, parent, QStringLiteral("专业版"), professionalRows);
+        addTargetSection(content, parent, QStringLiteral("社区版"), communityRows);
+        addTargetSection(content, parent, QStringLiteral("教育版"), educationRows);
+        addTargetSection(content, parent, QStringLiteral("其他版本"), otherRows);
+    }
+
+    void addTargetGuide(QVBoxLayout *content, QWidget *parent)
+    {
+        auto *guide = new QWidget(parent);
+        auto *grid = new QGridLayout(guide);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setHorizontalSpacing(18);
+        grid->setVerticalSpacing(4);
+
+        auto *compat = new QLabel(
+            QStringLiteral("<span style='color:#f04444;font-weight:700'>兼容应用基线：</span>"
+                           "默认向后兼容。例如：专业版1021，则当前应用默认适配专业版1021及之后版本"),
+            guide);
+        compat->setTextFormat(Qt::RichText);
+        compat->setWordWrap(true);
+        compat->setObjectName(QStringLiteral("MutedText"));
+
+        auto *unsupported = new QLabel(
+            QStringLiteral("<span style='color:#f04444;font-weight:700'>不上架版本：</span>"
+                           "选中后则默认不上架当前版本。例如：专业版1052，则当前应用不上架1052版本"),
+            guide);
+        unsupported->setTextFormat(Qt::RichText);
+        unsupported->setWordWrap(true);
+        unsupported->setObjectName(QStringLiteral("MutedText"));
+
+        grid->addWidget(compat, 0, 0);
+        grid->addWidget(unsupported, 0, 1);
+        grid->setColumnStretch(0, 1);
+        grid->setColumnStretch(1, 1);
+        content->addWidget(guide);
+    }
+
+    void addTargetSection(QVBoxLayout *content, QWidget *parent, const QString &sectionName, const QVector<int> &indexes)
+    {
+        if (indexes.isEmpty()) {
+            return;
+        }
+
+        auto *section = new QLabel(sectionName, parent);
+        section->setObjectName(QStringLiteral("FieldCaption"));
+        content->addWidget(section);
+
+        auto *header = new QWidget(parent);
+        auto *headerLayout = new QHBoxLayout(header);
+        headerLayout->setContentsMargins(0, 0, 0, 0);
+        headerLayout->setSpacing(10);
+        auto *lineCaption = new QLabel(QStringLiteral("系统线"), header);
+        lineCaption->setObjectName(QStringLiteral("MutedText"));
+        auto *baselineCaption = new QLabel(QStringLiteral("兼容应用基线"), header);
+        baselineCaption->setObjectName(QStringLiteral("MutedText"));
+        auto *unsupportedCaption = new QLabel(QStringLiteral("不上架版本"), header);
+        unsupportedCaption->setObjectName(QStringLiteral("MutedText"));
+        headerLayout->addWidget(lineCaption);
+        headerLayout->addStretch(1);
+        headerLayout->addWidget(baselineCaption);
+        headerLayout->addSpacing(188);
+        headerLayout->addWidget(unsupportedCaption);
+        headerLayout->addSpacing(176);
+        content->addWidget(header);
+
+        QJsonArray targets = m_group.value(QStringLiteral("targets")).toArray();
+        for (int index : indexes) {
+            if (index < 0 || index >= targets.size()) {
+                continue;
+            }
+            const QJsonObject target = targets.at(index).toObject();
             auto *row = new QWidget(parent);
             auto *rowLayout = new QHBoxLayout(row);
             rowLayout->setContentsMargins(0, 0, 0, 0);
-            rowLayout->setSpacing(8);
+            rowLayout->setSpacing(10);
 
-            auto *checkBox = new QCheckBox(targetTitle(target), row);
+            auto *checkBox = new QCheckBox(systemLineTitle(target), row);
             checkBox->setChecked(target.value(QStringLiteral("selected")).toBool(false));
             checkBox->setToolTip(target.value(QStringLiteral("package_path")).toString());
-            rowLayout->addWidget(checkBox, 1);
+            checkBox->setMinimumWidth(180);
+            rowLayout->addWidget(checkBox);
 
-            auto *baselineButton = new QPushButton(baselineSummary(target), row);
-            baselineButton->setToolTip(baselineTooltip(target));
-            baselineButton->setEnabled(!target.value(QStringLiteral("baseline_options")).toArray().isEmpty());
-            baselineButton->setMinimumWidth(180);
-            rowLayout->addWidget(baselineButton);
+            auto *baselineCombo = createBaselineCombo(
+                row,
+                target,
+                QStringLiteral("未选择具体版本"),
+                selectedBaselineId(target));
+            rowLayout->addWidget(baselineCombo, 1);
+
+            auto *separator = new QFrame(row);
+            separator->setFrameShape(QFrame::VLine);
+            separator->setObjectName(QStringLiteral("SoftSeparator"));
+            rowLayout->addWidget(separator);
+
+            auto *unsupportedCombo = createBaselineCombo(
+                row,
+                target,
+                QStringLiteral("不设置不上架版本"),
+                unsupportedBaselineId(target));
+            rowLayout->addWidget(unsupportedCombo, 1);
+
             content->addWidget(row);
-
-            m_targetBindings.append(TargetBinding{index, checkBox, baselineButton});
-            connect(baselineButton, &QPushButton::clicked, this, [this, index, baselineButton]() {
-                openBaselineSelector(index, baselineButton);
-            });
+            m_targetBindings.append(TargetBinding{index, sectionName, checkBox, baselineCombo, unsupportedCombo});
         }
+    }
+
+    QComboBox *createBaselineCombo(QWidget *parent, const QJsonObject &target, const QString &emptyText, const QString &selectedId)
+    {
+        auto *combo = new QComboBox(parent);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        combo->setMinimumWidth(220);
+
+        const QJsonArray options = target.value(QStringLiteral("baseline_options")).toArray();
+        if (options.isEmpty()) {
+            combo->addItem(QStringLiteral("未返回具体版本"), QString());
+            combo->setEnabled(false);
+            return combo;
+        }
+
+        combo->addItem(emptyText, QString());
+        for (const QJsonValue &value : options) {
+            const QJsonObject option = value.toObject();
+            const QString id = option.value(QStringLiteral("id")).toString().trimmed();
+            if (!id.isEmpty()) {
+                combo->addItem(baselineComboText(target, option), id);
+            }
+        }
+        setComboCurrentId(combo, selectedId);
+        return combo;
     }
 
     void addOptionRows(QVBoxLayout *content, QWidget *parent)
@@ -554,31 +571,6 @@ private:
         content->addWidget(host);
     }
 
-    void openBaselineSelector(int targetIndex, QPushButton *button)
-    {
-        QJsonArray targets = m_group.value(QStringLiteral("targets")).toArray();
-        if (targetIndex < 0 || targetIndex >= targets.size()) {
-            return;
-        }
-        QJsonObject target = targets.at(targetIndex).toObject();
-        const QJsonArray options = target.value(QStringLiteral("baseline_options")).toArray();
-        if (options.isEmpty()) {
-            return;
-        }
-
-        BaselineSelectionDialog dialog(options, target.value(QStringLiteral("selected_baseline_ids")).toArray(), this);
-        if (dialog.exec() != QDialog::Accepted) {
-            return;
-        }
-        const QJsonArray selectedIds = dialog.selectedIds();
-        target.insert(QStringLiteral("selected_baseline_ids"), selectedIds);
-        target.insert(QStringLiteral("baseline_id"), selectedIds.isEmpty() ? QString() : selectedIds.first().toString());
-        targets[targetIndex] = target;
-        m_group.insert(QStringLiteral("targets"), targets);
-        button->setText(baselineSummary(target));
-        button->setToolTip(baselineTooltip(target));
-    }
-
     void collectUi()
     {
         QJsonArray targets = m_group.value(QStringLiteral("targets")).toArray();
@@ -588,11 +580,12 @@ private:
             }
             QJsonObject target = targets.at(binding.index).toObject();
             target.insert(QStringLiteral("selected"), binding.checkBox->isChecked());
-            if (target.value(QStringLiteral("selected_baseline_ids")).toArray().isEmpty()) {
-                const QJsonArray latest = latestBaselineId(target.value(QStringLiteral("baseline_options")).toArray());
-                target.insert(QStringLiteral("selected_baseline_ids"), latest);
-                target.insert(QStringLiteral("baseline_id"), latest.isEmpty() ? QString() : latest.first().toString());
-            }
+            const QString baselineId = binding.baselineCombo == nullptr ? QString() : binding.baselineCombo->currentData().toString().trimmed();
+            target.insert(QStringLiteral("selected_baseline_ids"), singleStringArray(baselineId));
+            target.insert(QStringLiteral("baseline_id"), baselineId);
+
+            const QString unsupportedId = binding.unsupportedCombo == nullptr ? QString() : binding.unsupportedCombo->currentData().toString().trimmed();
+            target.insert(QStringLiteral("unsupported_baseline_ids"), singleStringArray(unsupportedId));
             targets[binding.index] = target;
         }
         m_group.insert(QStringLiteral("targets"), targets);

@@ -213,8 +213,6 @@ def _assert_target_supported(package_family: str, target: TargetRecord, capabili
     allowed_baselines = capability_cache.baseline_options.get(baseline_key, ())
     allowed_ids = {option.baseline_id for option in allowed_baselines}
     target_baseline_ids = _target_baseline_ids(target)
-    if allowed_ids and not target_baseline_ids:
-        raise ValidationError(f"baseline required for system line {target.sup_sys_code}")
     for baseline_id in target_baseline_ids:
         if baseline_id not in allowed_ids:
             raise ValidationError(f"unsupported baseline for system line {target.sup_sys_code}: {baseline_id}")
