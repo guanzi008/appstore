@@ -1,0 +1,205 @@
+name: UTPublisher App Update
+description: Update an existing deepin/UOS app store application from packages or a workbook.
+author: guanzi008
+
+inputs:
+  username:
+    description: deepin/UOS app store account name.
+    required: true
+  password:
+    description: deepin/UOS app store account password.
+    required: true
+  packages:
+    description: Newline-separated package paths to upload for an existing app update.
+    required: false
+    default: ""
+  workbook:
+    description: Workbook path for app metadata, package, and compatibility updates.
+    required: false
+    default: ""
+  app-id:
+    description: Existing app id. If omitted, the action matches by package name.
+    required: false
+    default: ""
+  note:
+    description: Release note or update description.
+    required: false
+    default: ""
+  mode:
+    description: Submission mode passed to upload_batch.
+    required: false
+    default: api
+  rows:
+    description: Optional row selector for workbook uploads.
+    required: false
+    default: ""
+  output-dir:
+    description: Directory where report.json and report.xlsx are written.
+    required: false
+    default: appstore-output
+  capabilities-cache:
+    description: Directory used for cached store capabilities.
+    required: false
+    default: .utpublisher/capabilities
+  sync-capabilities:
+    description: Whether to sync store capability metadata before uploading.
+    required: false
+    default: "true"
+  icon:
+    description: Optional icon path to replace the app icon.
+    required: false
+    default: ""
+  screenshots:
+    description: Optional newline-separated screenshot paths to replace app screenshots.
+    required: false
+    default: ""
+  region:
+    description: Optional release region override.
+    required: false
+    default: ""
+  pkg-channel:
+    description: Optional package channel override.
+    required: false
+    default: ""
+  release-key:
+    description: Release grouping key used by direct package uploads.
+    required: false
+    default: direct-update
+  headless:
+    description: Use headless browser mode when mode=browser.
+    required: false
+    default: "true"
+  install-system-packages:
+    description: Install Linux command-line tools needed by package inspectors.
+    required: false
+    default: "true"
+
+outputs:
+  output-dir:
+    description: Directory containing generated reports.
+    value: ${{ steps.submit.outputs.output-dir }}
+  report-path:
+    description: JSON report path.
+    value: ${{ steps.submit.outputs.report-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install system package inspection tools
+      if: ${{ runner.os == 'Linux' && inputs.install-system-packages == 'true' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends dpkg-dev file
+
+    - name: Install UTPublisher Python dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r "$GITHUB_ACTION_PATH/appstore/requirements.txt"
+
+    - name: Submit app update
+      id: submit
+      shell: bash
+      env:
+        APPSTORE_USERNAME: ${{ inputs.username }}
+        APPSTORE_PASSWORD: ${{ inputs.password }}
+        INPUT_PACKAGES: ${{ inputs.packages }}
+        INPUT_WORKBOOK: ${{ inputs.workbook }}
+        INPUT_APP_ID: ${{ inputs.app-id }}
+        INPUT_NOTE: ${{ inputs.note }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_ROWS: ${{ inputs.rows }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
+        INPUT_CAPABILITIES_CACHE: ${{ inputs.capabilities-cache }}
+        INPUT_SYNC_CAPABILITIES: ${{ inputs.sync-capabilities }}
+        INPUT_ICON: ${{ inputs.icon }}
+        INPUT_SCREENSHOTS: ${{ inputs.screenshots }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_PKG_CHANNEL: ${{ inputs.pkg-channel }}
+        INPUT_RELEASE_KEY: ${{ inputs.release-key }}
+        INPUT_HEADLESS: ${{ inputs.headless }}
+      run: |
+        set -euo pipefail
+
+        export PYTHONPATH="$GITHUB_ACTION_PATH${PYTHONPATH:+:$PYTHONPATH}"
+
+        if [[ "$INPUT_SYNC_CAPABILITIES" == "true" ]]; then
+          python -m appstore.upload_batch sync-capabilities \
+            --cache-dir "$INPUT_CAPABILITIES_CACHE" \
+            --username "$APPSTORE_USERNAME" \
+            --password "$APPSTORE_PASSWORD"
+        fi
+
+        headless_arg=("--headless")
+        if [[ "$INPUT_HEADLESS" == "false" ]]; then
+          headless_arg=("--no-headless")
+        fi
+
+        if [[ -n "$INPUT_WORKBOOK" ]]; then
+          cmd=(
+            python -m appstore.upload_batch upload "$INPUT_WORKBOOK"
+            --output-dir "$INPUT_OUTPUT_DIR"
+            --capabilities-cache "$INPUT_CAPABILITIES_CACHE"
+            --username "$APPSTORE_USERNAME"
+            --password "$APPSTORE_PASSWORD"
+            --mode "$INPUT_MODE"
+            "${headless_arg[@]}"
+          )
+          if [[ -n "$INPUT_ROWS" ]]; then
+            cmd+=(--rows "$INPUT_ROWS")
+          fi
+          "${cmd[@]}"
+        else
+          packages=()
+          while IFS= read -r package_path; do
+            [[ -z "$package_path" ]] && continue
+            packages+=("$package_path")
+          done <<< "$INPUT_PACKAGES"
+
+          if [[ ${#packages[@]} -eq 0 ]]; then
+            echo "Either 'packages' or 'workbook' input is required." >&2
+            exit 2
+          fi
+
+          cmd=(
+            python -m appstore.upload_batch upload-packages
+            "${packages[@]}"
+            --output-dir "$INPUT_OUTPUT_DIR"
+            --capabilities-cache "$INPUT_CAPABILITIES_CACHE"
+            --username "$APPSTORE_USERNAME"
+            --password "$APPSTORE_PASSWORD"
+            --mode "$INPUT_MODE"
+            --release-key "$INPUT_RELEASE_KEY"
+            "${headless_arg[@]}"
+          )
+          if [[ -n "$INPUT_APP_ID" ]]; then
+            cmd+=(--app-id "$INPUT_APP_ID")
+          fi
+          if [[ -n "$INPUT_NOTE" ]]; then
+            cmd+=(--note "$INPUT_NOTE")
+          fi
+          if [[ -n "$INPUT_REGION" ]]; then
+            cmd+=(--region "$INPUT_REGION")
+          fi
+          if [[ -n "$INPUT_PKG_CHANNEL" ]]; then
+            cmd+=(--pkg-channel "$INPUT_PKG_CHANNEL")
+          fi
+          if [[ -n "$INPUT_ICON" ]]; then
+            cmd+=(--icon "$INPUT_ICON")
+          fi
+          while IFS= read -r screenshot_path; do
+            [[ -z "$screenshot_path" ]] && continue
+            cmd+=(--screenshot "$screenshot_path")
+          done <<< "$INPUT_SCREENSHOTS"
+
+          "${cmd[@]}"
+        fi
+
+        echo "output-dir=$INPUT_OUTPUT_DIR" >> "$GITHUB_OUTPUT"
+        echo "report-path=$INPUT_OUTPUT_DIR/report.json" >> "$GITHUB_OUTPUT"

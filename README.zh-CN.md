@@ -15,6 +15,57 @@ python3 -m appstore.upload_batch --help
 - 中文说明：[appstore/README.zh-CN.md](appstore/README.zh-CN.md)
 - 英文说明：[appstore/README.md](appstore/README.md)
 
+## GitHub Action
+
+其他项目可以直接把本仓库当作复用 Action，用于已有应用更新。调用方仓库需要先产出 `.deb`、`.uab` 或 `.layer` 包，再传给这个 Action。
+
+```yaml
+name: Update UOS Store App
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package path
+        required: true
+
+jobs:
+  update-app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update app store listing
+        uses: guanzi008/appstore@main
+        with:
+          username: ${{ secrets.APPSTORE_USERNAME }}
+          password: ${{ secrets.APPSTORE_PASSWORD }}
+          packages: ${{ inputs.package }}
+          app-id: "1096227"
+          note: "自动更新"
+          mode: api
+```
+
+多个包用多行传入：
+
+```yaml
+          packages: |
+            dist/app_1.2.0_amd64.deb
+            dist/app_1.2.0_arm64.deb
+            dist/app_1.2.0_loong64.deb
+```
+
+如果要按 workbook 更新文案、系统线或批量应用：
+
+```yaml
+        uses: guanzi008/appstore@main
+        with:
+          username: ${{ secrets.APPSTORE_USERNAME }}
+          password: ${{ secrets.APPSTORE_PASSWORD }}
+          workbook: release.xlsx
+          mode: api
+```
+
 UOS AI MCP：
 
 - MCP 启动入口：`scripts/appstore-mcp`
