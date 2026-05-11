@@ -22,6 +22,8 @@ set(APPSTORE_PYTHON_WHEELHOUSE
 option(APPSTORE_EMBED_PYTHON_RUNTIME "Build and install a bundled embedded Python runtime" ON)
 option(APPSTORE_VENDOR_PYTHON_DEPS "Install Python requirements into the bundled embedded Python runtime" OFF)
 option(APPSTORE_INSTALL_PYTHON_SOURCES "Install Python source trees next to the bytecode runtime" OFF)
+set(APPSTORE_QT_MAJOR "AUTO" CACHE STRING "Qt major version to use: AUTO, 6, or 5")
+set_property(CACHE APPSTORE_QT_MAJOR PROPERTY STRINGS AUTO 6 5)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC OFF)
@@ -30,12 +32,43 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Embed)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(DTK6WIDGET REQUIRED IMPORTED_TARGET dtk6widget)
 
-qt_add_executable(utpublisher-qt-cpp
+if(APPSTORE_QT_MAJOR STREQUAL "AUTO")
+    find_package(Qt6 QUIET COMPONENTS Core Gui Widgets)
+    pkg_check_modules(APPSTORE_DTK6_WIDGET QUIET IMPORTED_TARGET dtk6widget)
+    if(Qt6_FOUND AND APPSTORE_DTK6_WIDGET_FOUND)
+        set(APPSTORE_RESOLVED_QT_MAJOR 6)
+        set(APPSTORE_DTK_WIDGET_TARGET PkgConfig::APPSTORE_DTK6_WIDGET)
+        set(APPSTORE_DTK_WIDGET_MODULE dtk6widget)
+    else()
+        find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
+        pkg_check_modules(APPSTORE_DTK5_WIDGET REQUIRED IMPORTED_TARGET dtkwidget)
+        set(APPSTORE_RESOLVED_QT_MAJOR 5)
+        set(APPSTORE_DTK_WIDGET_TARGET PkgConfig::APPSTORE_DTK5_WIDGET)
+        set(APPSTORE_DTK_WIDGET_MODULE dtkwidget)
+    endif()
+elseif(APPSTORE_QT_MAJOR STREQUAL "6")
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+    pkg_check_modules(APPSTORE_DTK6_WIDGET REQUIRED IMPORTED_TARGET dtk6widget)
+    set(APPSTORE_RESOLVED_QT_MAJOR 6)
+    set(APPSTORE_DTK_WIDGET_TARGET PkgConfig::APPSTORE_DTK6_WIDGET)
+    set(APPSTORE_DTK_WIDGET_MODULE dtk6widget)
+elseif(APPSTORE_QT_MAJOR STREQUAL "5")
+    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
+    pkg_check_modules(APPSTORE_DTK5_WIDGET REQUIRED IMPORTED_TARGET dtkwidget)
+    set(APPSTORE_RESOLVED_QT_MAJOR 5)
+    set(APPSTORE_DTK_WIDGET_TARGET PkgConfig::APPSTORE_DTK5_WIDGET)
+    set(APPSTORE_DTK_WIDGET_MODULE dtkwidget)
+else()
+    message(FATAL_ERROR "APPSTORE_QT_MAJOR must be AUTO, 6, or 5")
+endif()
+
+set(APPSTORE_QT_PACKAGE_PREFIX "Qt${APPSTORE_RESOLVED_QT_MAJOR}")
+message(STATUS "Building UTPublisher with Qt ${APPSTORE_RESOLVED_QT_MAJOR} and ${APPSTORE_DTK_WIDGET_MODULE}")
+
+add_executable(utpublisher-qt-cpp
     src/main.cpp
     src/BridgeClient.cpp
     src/MainWindow.cpp
@@ -50,7 +83,7 @@ qt_add_executable(utpublisher-qt-cpp
     src/ui/WorkflowBar.cpp
 )
 
-qt_add_executable(utpublisher-python-backend
+add_executable(utpublisher-python-backend
     src/backend_launcher.cpp
 )
 
@@ -59,13 +92,23 @@ target_compile_definitions(utpublisher-qt-cpp PRIVATE
     APPSTORE_REPO_ROOT="${APPSTORE_RUNTIME_REPO_ROOT}"
     APPSTORE_BUNDLED_FONTS_DIR="${APPSTORE_BUNDLED_FONTS_DIR}"
     APPSTORE_INSTALLED_FONTS_DIR="/${APPSTORE_RUNTIME_SHARE_DIR}/fonts"
+    APPSTORE_QT_MAJOR=${APPSTORE_RESOLVED_QT_MAJOR}
 )
-target_link_libraries(utpublisher-qt-cpp PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets PkgConfig::DTK6WIDGET)
+target_link_libraries(utpublisher-qt-cpp PRIVATE
+    ${APPSTORE_QT_PACKAGE_PREFIX}::Core
+    ${APPSTORE_QT_PACKAGE_PREFIX}::Gui
+    ${APPSTORE_QT_PACKAGE_PREFIX}::Widgets
+    ${APPSTORE_DTK_WIDGET_TARGET}
+)
 
 target_compile_definitions(utpublisher-python-backend PRIVATE
     APPSTORE_APPID="${APPSTORE_APPID}"
+    APPSTORE_QT_MAJOR=${APPSTORE_RESOLVED_QT_MAJOR}
 )
-target_link_libraries(utpublisher-python-backend PRIVATE Qt6::Core Python3::Python)
+target_link_libraries(utpublisher-python-backend PRIVATE
+    ${APPSTORE_QT_PACKAGE_PREFIX}::Core
+    Python3::Python
+)
 set_target_properties(utpublisher-python-backend PROPERTIES
     BUILD_RPATH "${APPSTORE_PYTHON_RUNTIME_DIR}/lib"
     INSTALL_RPATH "$ORIGIN/../python-runtime/lib"

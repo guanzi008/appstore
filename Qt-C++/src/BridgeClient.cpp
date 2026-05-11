@@ -86,7 +86,7 @@ void BridgeClient::callAsync(const QString &command, const QJsonObject &payload,
         m_process->write(input);
         m_process->closeWriteChannel();
     });
-    connect(m_process, &QProcess::finished, this, &BridgeClient::finishProcess);
+    connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &BridgeClient::finishProcess);
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             const QString command = m_currentCommand;

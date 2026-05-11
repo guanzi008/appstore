@@ -5,6 +5,7 @@
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QStyle>
+#include <QVariant>
 
 namespace {
 
@@ -123,7 +124,7 @@ void WorkflowBar::updateStepLabel(QLabel *label, const QString &title, StepState
         return;
     }
     label->setText(QStringLiteral("%1 %2").arg(statePrefix(state), title));
-    label->setProperty("state", stateProperty(state));
+    label->setProperty("state", QVariant(stateProperty(state)));
     label->style()->unpolish(label);
     label->style()->polish(label);
     label->update();

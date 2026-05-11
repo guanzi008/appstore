@@ -7,6 +7,7 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 APPID = com.uniontech.utpublisher
 APP_ROOT = /opt/apps/$(APPID)
 RUNTIME_REPO_ROOT = $(APP_ROOT)/files/share/$(APPID)
+APPSTORE_QT_MAJOR ?= AUTO
 
 %:
 	dh $@ --buildsystem=cmake --sourcedirectory=Qt-C++
@@ -19,6 +20,7 @@ override_dh_auto_configure:
 		-DAPPSTORE_RUNTIME_REPO_ROOT=$(RUNTIME_REPO_ROOT) \
 		-DAPPSTORE_INFO_VERSION=0.1.0.1 \
 		-DAPPSTORE_INFO_ARCH=$(DEB_HOST_ARCH) \
+		-DAPPSTORE_QT_MAJOR=$(APPSTORE_QT_MAJOR) \
 		-DAPPSTORE_EMBED_PYTHON_RUNTIME=ON \
 		-DAPPSTORE_VENDOR_PYTHON_DEPS=ON \
 		-DAPPSTORE_INSTALL_PYTHON_SOURCES=OFF \

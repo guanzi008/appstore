@@ -117,7 +117,7 @@ void QrLoginDialog::startLogin()
             m_stderrBuffer.append(m_process->readAllStandardError());
         }
     });
-    connect(m_process, &QProcess::finished, this, &QrLoginDialog::handleFinished);
+    connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &QrLoginDialog::handleFinished);
     connect(m_process, &QProcess::errorOccurred, this, &QrLoginDialog::handleProcessError);
 
     m_timeout = new QTimer(this);
