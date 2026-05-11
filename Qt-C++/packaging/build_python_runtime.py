@@ -95,7 +95,7 @@ def _prune_stdlib_runtime(stdlib_target: Path) -> None:
                 path.unlink(missing_ok=True)
 
 
-def _install_requirements(site_packages: Path, requirements: list[Path]) -> None:
+def _install_requirements(site_packages: Path, requirements: list[Path], wheelhouse: Path | None) -> None:
     if not requirements:
         return
     site_packages.mkdir(parents=True, exist_ok=True)
@@ -115,6 +115,10 @@ def _install_requirements(site_packages: Path, requirements: list[Path]) -> None
         "--target",
         str(site_packages),
     ]
+    if wheelhouse is not None:
+        if not wheelhouse.is_dir():
+            raise FileNotFoundError(f"Python wheelhouse not found: {wheelhouse}")
+        command.extend(["--no-index", "--find-links", str(wheelhouse), "--no-build-isolation"])
     extra_args = os.environ.get("APPSTORE_PIP_EXTRA_ARGS", "").strip()
     if extra_args:
         command.extend(shlex.split(extra_args))
@@ -140,7 +144,13 @@ def _prune_dependency_metadata(site_packages: Path) -> None:
                 path.unlink(missing_ok=True)
 
 
-def build_runtime(output_dir: Path, *, install_deps: bool, requirements: list[Path]) -> None:
+def build_runtime(
+    output_dir: Path,
+    *,
+    install_deps: bool,
+    requirements: list[Path],
+    wheelhouse: Path | None,
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
@@ -154,7 +164,7 @@ def build_runtime(output_dir: Path, *, install_deps: bool, requirements: list[Pa
 
     site_packages = stdlib_target / "site-packages"
     if install_deps:
-        _install_requirements(site_packages, requirements)
+        _install_requirements(site_packages, requirements, wheelhouse)
         _prune_dependency_metadata(site_packages)
         compileall.compile_dir(site_packages, quiet=1, force=True)
 
@@ -166,6 +176,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("runtime_dir")
     parser.add_argument("--install-deps", action="store_true")
     parser.add_argument("--requirements", action="append", default=[])
+    parser.add_argument(
+        "--wheelhouse",
+        type=Path,
+        help="Install Python requirements from this offline wheelhouse instead of PyPI.",
+    )
     args = parser.parse_args(argv[1:])
 
     requirements = [Path(value).resolve() for value in args.requirements]
@@ -173,7 +188,12 @@ def main(argv: list[str]) -> int:
         if not requirements_file.exists():
             parser.error(f"requirements file not found: {requirements_file}")
 
-    build_runtime(Path(args.runtime_dir).resolve(), install_deps=args.install_deps, requirements=requirements)
+    build_runtime(
+        Path(args.runtime_dir).resolve(),
+        install_deps=args.install_deps,
+        requirements=requirements,
+        wheelhouse=args.wheelhouse.resolve() if args.wheelhouse else None,
+    )
     return 0
 
 

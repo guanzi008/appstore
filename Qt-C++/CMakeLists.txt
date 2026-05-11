@@ -15,6 +15,10 @@ set(APPSTORE_VENDORED_PYTHON_REQUIREMENTS
     "${APPSTORE_PROJECT_ROOT}/appstore/requirements.txt"
     CACHE STRING "Semicolon-separated requirements files installed into the embedded Python runtime"
 )
+set(APPSTORE_PYTHON_WHEELHOUSE
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/python-wheelhouse"
+    CACHE PATH "Offline wheelhouse used to vendor Python requirements into the embedded runtime"
+)
 option(APPSTORE_EMBED_PYTHON_RUNTIME "Build and install a bundled embedded Python runtime" ON)
 option(APPSTORE_VENDOR_PYTHON_DEPS "Install Python requirements into the bundled embedded Python runtime" OFF)
 option(APPSTORE_INSTALL_PYTHON_SOURCES "Install Python source trees next to the bytecode runtime" OFF)
@@ -73,6 +77,9 @@ file(GLOB_RECURSE APPSTORE_PYTHON_SOURCES CONFIGURE_DEPENDS
     "${APPSTORE_PROJECT_ROOT}/openGA/*.py"
 )
 set(APPSTORE_PYTHON_BYTECODE_DIR "${CMAKE_CURRENT_BINARY_DIR}/python-bytecode")
+file(GLOB APPSTORE_PYTHON_WHEELHOUSE_FILES CONFIGURE_DEPENDS
+    "${APPSTORE_PYTHON_WHEELHOUSE}/*"
+)
 add_custom_command(
     OUTPUT "${APPSTORE_PYTHON_BYTECODE_DIR}/.stamp"
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${APPSTORE_PYTHON_BYTECODE_DIR}"
@@ -110,6 +117,9 @@ if(APPSTORE_EMBED_PYTHON_RUNTIME)
     )
     if(APPSTORE_VENDOR_PYTHON_DEPS)
         list(APPEND APPSTORE_PYTHON_RUNTIME_ARGS "--install-deps")
+        if(APPSTORE_PYTHON_WHEELHOUSE AND EXISTS "${APPSTORE_PYTHON_WHEELHOUSE}")
+            list(APPEND APPSTORE_PYTHON_RUNTIME_ARGS "--wheelhouse" "${APPSTORE_PYTHON_WHEELHOUSE}")
+        endif()
         foreach(requirements_file ${APPSTORE_VENDORED_PYTHON_REQUIREMENTS})
             if(EXISTS "${requirements_file}")
                 list(APPEND APPSTORE_PYTHON_RUNTIME_ARGS "--requirements" "${requirements_file}")
@@ -125,6 +135,7 @@ if(APPSTORE_EMBED_PYTHON_RUNTIME)
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/build_python_runtime.py"
             ${APPSTORE_VENDORED_PYTHON_REQUIREMENTS}
+            ${APPSTORE_PYTHON_WHEELHOUSE_FILES}
         COMMENT "Building embedded Python runtime"
         VERBATIM
     )

@@ -22,6 +22,7 @@ override_dh_auto_configure:
 		-DAPPSTORE_EMBED_PYTHON_RUNTIME=ON \
 		-DAPPSTORE_VENDOR_PYTHON_DEPS=ON \
 		-DAPPSTORE_INSTALL_PYTHON_SOURCES=OFF \
+		-DAPPSTORE_PYTHON_WHEELHOUSE="$(CURDIR)/Qt-C++/packaging/python-wheelhouse" \
 		-DAPPSTORE_VENDORED_PYTHON_REQUIREMENTS="$(CURDIR)/appstore/requirements.txt"
 
 override_dh_installdocs:
