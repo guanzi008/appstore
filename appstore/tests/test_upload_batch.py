@@ -1275,6 +1275,13 @@ class RunBatchTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(client.login_calls, [("demo", "secret")])
+        self.assertEqual(
+            [(filename, upload_type) for filename, _data, upload_type in client.upload_calls if upload_type == "temppkg"],
+            [
+                ("demo-app_1.0.0_amd64.deb", "temppkg"),
+                ("demo-app_2.0.0_amd64.deb", "temppkg"),
+            ],
+        )
         submit_mock.assert_called_once()
         report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
         self.assertEqual([row["status"] for row in report], ["submitted", "submitted"])
@@ -1541,6 +1548,13 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(client.login_calls, [("demo", "secret")])
         self.assertEqual(client.find_calls, ["labelnova"])
+        self.assertEqual(
+            [call[0] for call in client.upload_calls],
+            [
+                "labelnova_1.0.5-1_amd64.deb",
+                "labelnova_1.0.5-1_arm64.deb",
+            ],
+        )
         submit_mock.assert_called_once()
         validated_release = submit_mock.call_args.kwargs["validated_release"]
         self.assertEqual(validated_release.app.pkg_name, "labelnova")

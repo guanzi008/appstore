@@ -57,6 +57,21 @@ def _infer_package_kind_from_path(file_path: Path) -> tuple[str, str]:
     raise RuntimeError(f"unsupported package format for file: {file_path.name}")
 
 
+def _package_upload_filename(package: PackageRecord, package_info: DebPackageInfo | None = None) -> str:
+    if package_info is None:
+        return package.file_path.name
+    package_family = package_info.package_family or package.package_family
+    package_format = package_info.package_format or package.package_format
+    if package_family != "deb" or package_format != "deb":
+        return package.file_path.name
+    pkg_name = package_info.pkg_name.strip()
+    pkg_version = package_info.pkg_version.strip()
+    pkg_arch = package_info.pkg_arch.strip()
+    if not pkg_name or not pkg_version or not pkg_arch:
+        return package.file_path.name
+    return f"{pkg_name}_{pkg_version}_{pkg_arch}.deb"
+
+
 def _resolve_arch_code_label(arch: str) -> tuple[str, str]:
     try:
         return ARCH_CODE_MAP[arch.strip().lower()]
@@ -951,10 +966,15 @@ def _build_app_uploads(client, app: AppRecord) -> dict[str, UploadedFileRef | tu
     }
 
 
-def _build_package_uploads(client, packages: tuple[PackageRecord, ...]) -> dict[str, UploadedFileRef]:
+def _build_package_uploads(
+    client,
+    packages: tuple[PackageRecord, ...],
+    package_infos: dict[str, DebPackageInfo] | None = None,
+) -> dict[str, UploadedFileRef]:
+    package_infos = package_infos or {}
     return {
         package.package_key: client.upload_file_bytes(
-            filename=package.file_path.name,
+            filename=_package_upload_filename(package, package_infos.get(package.package_key)),
             data=package.file_path.read_bytes(),
             upload_type="temppkg",
         )
@@ -1272,7 +1292,7 @@ def _run_direct_upload_packages(
             )
             resolved_app_id = getattr(browser_result, "app_id", "") or target_app_id
         else:
-            uploads_by_package = _build_package_uploads(client, packages)
+            uploads_by_package = _build_package_uploads(client, packages, package_infos)
             response = submit_grouped_release(
                 client=client,
                 validated_release=validated_release,
@@ -1435,7 +1455,7 @@ def _run_upload(args) -> int:
                     app_entry_cache,
                 )
                 app_uploads = None if existing_app_detail is not None else _build_app_uploads(client, app)
-                uploads_by_package = _build_package_uploads(client, packages)
+                uploads_by_package = _build_package_uploads(client, packages, package_infos)
                 response = submit_grouped_release(
                     client=client,
                     validated_release=validated_release,
@@ -2013,7 +2033,7 @@ def run_batch(
             )
             uploads = {
                 "package": client.upload_file_bytes(
-                    filename=package_record.file_path.name,
+                    filename=_package_upload_filename(package_record, package_info),
                     data=package_record.file_path.read_bytes(),
                     upload_type="temppkg",
                 ),
