@@ -16,6 +16,7 @@ from appstore.update_payload import (
     build_reused_lan_infos,
     extract_detail_data,
     merge_origin_pkgs,
+    normalize_website_for_submit,
     normalize_origin_pkg,
 )
 
@@ -502,7 +503,7 @@ def build_release_payload(
                 "pkgInstallMode": package_install_mode,
                 "inAppPayment": 0,
                 "category_id": validated_release.app.category_id,
-                "website": validated_release.app.website,
+                "website": normalize_website_for_submit(validated_release.app.website),
                 "region": region_value,
             },
             "app_fit_info": {

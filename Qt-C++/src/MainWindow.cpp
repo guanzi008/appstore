@@ -1152,7 +1152,7 @@ void MainWindow::chooseScreenshotFiles()
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), QStringLiteral("%1 张手动截图").arg(addedCount));
     m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Running, StepState::Idle);
-    m_workflowBar->setStatusText(QStringLiteral("已添加 %1 张本地截图。").arg(addedCount));
+    m_workflowBar->setStatusText(QStringLiteral("已添加 %1 张本地截图，点击“预处理素材”后按商店规格调整尺寸。").arg(addedCount));
 }
 
 void MainWindow::pasteScreenshotFromClipboard()
@@ -1176,7 +1176,7 @@ void MainWindow::pasteScreenshotFromClipboard()
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), QStringLiteral("剪贴板截图"));
     m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Running, StepState::Idle);
-    m_workflowBar->setStatusText(QStringLiteral("已从剪贴板加入截图候选。"));
+    m_workflowBar->setStatusText(QStringLiteral("已从剪贴板加入截图候选，点击“预处理素材”后按商店规格调整尺寸。"));
 }
 
 void MainWindow::removeScreenshotAt(int index)

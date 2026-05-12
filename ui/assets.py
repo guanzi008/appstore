@@ -11,8 +11,9 @@ from ui.package_meta import PackageGroup, extract_archive_icon, extract_deb_icon
 
 MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024
 DEFAULT_ICON_SIZE = 512
-DEFAULT_SCREENSHOT_WIDTH = 1280
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+LANDSCAPE_SCREENSHOT_SIZE = (1050, 700, 1920, 1280)
+PORTRAIT_SCREENSHOT_SIZE = (360, 640, 900, 1600)
 
 
 @dataclass(frozen=True)
@@ -221,10 +222,8 @@ def _prepare_icon(source: Path, target: Path) -> Path:
 
 
 def _prepare_screenshot(source: Path, target_base: Path) -> Path:
-    _, _, _, smooth_transformation = _qt_image_api()
     image = _load_image(source)
-    if image.width() > DEFAULT_SCREENSHOT_WIDTH:
-        image = image.scaledToWidth(DEFAULT_SCREENSHOT_WIDTH, smooth_transformation)
+    image = _normalize_screenshot_image(image)
     png_path = target_base.with_suffix(".png")
     png_path.parent.mkdir(parents=True, exist_ok=True)
     if not image.save(str(png_path), "PNG"):
@@ -238,6 +237,85 @@ def _prepare_screenshot(source: Path, target_base: Path) -> Path:
             png_path.unlink(missing_ok=True)
             return jpg_path
     return jpg_path if jpg_path.exists() else png_path
+
+
+def _normalize_screenshot_image(image):
+    QtCore, _, _, smooth_transformation = _qt_image_api()
+    if image.width() <= 0 or image.height() <= 0:
+        raise RuntimeError("invalid screenshot dimensions")
+
+    if image.height() > image.width():
+        min_width, min_height, max_width, max_height = PORTRAIT_SCREENSHOT_SIZE
+        ratio_width, ratio_height = 9, 16
+    else:
+        min_width, min_height, max_width, max_height = LANDSCAPE_SCREENSHOT_SIZE
+        ratio_width, ratio_height = 3, 2
+
+    cropped = _center_crop_to_ratio(image, ratio_width, ratio_height)
+    target_width, target_height = _bounded_size_for_ratio(
+        cropped.width(),
+        cropped.height(),
+        min_width,
+        min_height,
+        max_width,
+        max_height,
+        ratio_width,
+        ratio_height,
+    )
+    if cropped.width() == target_width and cropped.height() == target_height:
+        return cropped
+
+    ignore_aspect_ratio = (
+        QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
+        if hasattr(QtCore.Qt, "AspectRatioMode")
+        else QtCore.Qt.IgnoreAspectRatio
+    )
+    return cropped.scaled(target_width, target_height, ignore_aspect_ratio, smooth_transformation)
+
+
+def _center_crop_to_ratio(image, ratio_width: int, ratio_height: int):
+    width = image.width()
+    height = image.height()
+    target_ratio = ratio_width / ratio_height
+    current_ratio = width / height
+    if current_ratio > target_ratio:
+        crop_width = max(1, round(height * target_ratio))
+        x = max(0, (width - crop_width) // 2)
+        return image.copy(x, 0, crop_width, height)
+    if current_ratio < target_ratio:
+        crop_height = max(1, round(width / target_ratio))
+        y = max(0, (height - crop_height) // 2)
+        return image.copy(0, y, width, crop_height)
+    return image
+
+
+def _bounded_size_for_ratio(
+    width: int,
+    height: int,
+    min_width: int,
+    min_height: int,
+    max_width: int,
+    max_height: int,
+    ratio_width: int,
+    ratio_height: int,
+) -> tuple[int, int]:
+    scale = 1.0
+    if width > max_width or height > max_height:
+        scale = min(max_width / width, max_height / height)
+    if width * scale < min_width or height * scale < min_height:
+        scale = max(scale, min_width / width, min_height / height)
+
+    target_width = max(min_width, min(max_width, round(width * scale)))
+    target_height = round(target_width * ratio_height / ratio_width)
+    if target_height > max_height:
+        target_height = max_height
+        target_width = round(target_height * ratio_width / ratio_height)
+    if target_height < min_height:
+        target_height = min_height
+        target_width = round(target_height * ratio_width / ratio_height)
+    target_width = max(min_width, min(max_width, target_width))
+    target_height = max(min_height, min(max_height, target_height))
+    return target_width, target_height
 
 
 def _load_image(path: Path):

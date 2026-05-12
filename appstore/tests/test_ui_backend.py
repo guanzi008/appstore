@@ -7,7 +7,7 @@ from unittest.mock import patch
 from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
 from appstore.capture_workflow import CapturePackageResult
 from appstore.session_state import BrowserSessionState, SessionStateStore
-from ui.assets import AssetBundle
+from ui.assets import AssetBundle, _prepare_screenshot
 from ui.backend import (
     BatchGroupSubmissionPlan,
     LoginContext,
@@ -24,6 +24,7 @@ from ui.backend import (
     submit_existing_applications_batch,
     try_restore_cached_login,
 )
+from ui.qt_compat import QtGui
 from ui.package_meta import PackageGroup, PackageMetadata
 from ui.preferences import PreferenceStore, UIPreferences
 from ui.cpp_bridge import (
@@ -84,6 +85,44 @@ class _DetailClient:
 
 
 class UiBackendCacheTests(unittest.TestCase):
+    @staticmethod
+    def _write_test_image(path: Path, width: int, height: int) -> None:
+        image_format = (
+            QtGui.QImage.Format.Format_RGB32
+            if hasattr(QtGui.QImage, "Format")
+            else QtGui.QImage.Format_RGB32
+        )
+        image = QtGui.QImage(width, height, image_format)
+        image.fill(QtGui.QColor(70, 120, 180))
+        if not image.save(str(path), "PNG"):
+            raise RuntimeError(f"failed to write test image: {path}")
+
+    def test_prepare_screenshot_normalizes_landscape_to_store_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "wide.png"
+            self._write_test_image(source, 1920, 1080)
+
+            result = _prepare_screenshot(source, root / "out" / "screen")
+            image = QtGui.QImage(str(result))
+
+            self.assertEqual((image.width(), image.height()), (1620, 1080))
+            self.assertEqual(image.width() * 2, image.height() * 3)
+            self.assertTrue(result.exists())
+
+    def test_prepare_screenshot_normalizes_portrait_to_store_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "portrait.png"
+            self._write_test_image(source, 1000, 2000)
+
+            result = _prepare_screenshot(source, root / "out" / "screen")
+            image = QtGui.QImage(str(result))
+
+            self.assertEqual((image.width(), image.height()), (900, 1600))
+            self.assertEqual(image.width() * 16, image.height() * 9)
+            self.assertTrue(result.exists())
+
     def test_login_with_credentials_saves_session_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir) / "session-state"

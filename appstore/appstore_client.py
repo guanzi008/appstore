@@ -16,6 +16,7 @@ from appstore.update_payload import (
     build_reused_fit_info,
     build_reused_lan_infos,
     merge_origin_pkgs,
+    normalize_website_for_submit,
 )
 
 ORIGIN = "https://appstore-dev.uniontech.com"
@@ -308,7 +309,7 @@ def build_submit_payload(
                 "pkgInstallMode": package_install_mode,
                 "inAppPayment": 0,
                 "category_id": app.category_id,
-                "website": app.website,
+                "website": normalize_website_for_submit(app.website),
                 "region": str(region_code),
             },
             "app_fit_info": {

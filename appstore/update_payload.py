@@ -29,6 +29,24 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
+def normalize_website_for_submit(value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "example.invalid" in lowered:
+        return ""
+    if any(char.isspace() for char in text):
+        return ""
+    if lowered.startswith(("http://", "https://")):
+        return text
+    if "://" in text:
+        return ""
+    if "." in text:
+        return f"https://{text}"
+    return ""
+
+
 def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -284,7 +302,7 @@ def build_reused_basic_info(
     reused["pkgInstallMode"] = package_install_mode
     reused["inAppPayment"] = reused.get("inAppPayment", 0) or 0
     reused["category_id"] = reused.get("category_id") if category_id is None else category_id
-    reused["website"] = _text(reused.get("website")) if website is None else website.strip()
+    reused["website"] = normalize_website_for_submit(reused.get("website") if website is None else website)
     reused["region"] = region or _text(reused.get("region")) or "1"
     return reused
 

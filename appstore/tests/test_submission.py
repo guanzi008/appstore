@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from appstore.models import (
@@ -372,6 +373,34 @@ class GroupedSubmissionTests(unittest.TestCase):
         fit_info = payload["app_info"]["app_fit_info"]
         self.assertEqual(fit_info["cpu_clip"], [{"code": 0}, {"code": 3}, {"code": 4}])
         self.assertEqual(fit_info["motherboard"], [{"code": 1}])
+
+    def test_build_release_payload_sanitizes_store_website_field(self) -> None:
+        app = replace(_app(), website="https://example.invalid/demo")
+        release = _release()
+        packages = (
+            PackageRecord(20, "demo", "stable", "pkg-a", "deb", "deb", Path("/tmp/demo-1.deb"), declared_arch="amd64"),
+        )
+        inspected = {
+            "pkg-a": PackageInfo("demo", "1.0.0", "amd64", 1, "hash1", Path("/tmp/demo-1.deb")),
+        }
+        targets = {"pkg-a": (TargetRecord(30, "demo", "stable", "pkg-a", "11", baseline_id="2300"),)}
+        validated = validate_release_group(app, release, packages, targets, inspected, _cache())
+
+        payload = build_release_payload(
+            validated,
+            uploads_by_package={"pkg-a": UploadedFileRef(kind="temppkg", file_save_key="pkg-a-key", size=1, file_hash="hash1")},
+            app_uploads={
+                "icon": UploadedFileRef(kind="icon", file_save_key="icon-key", size=3, file_hash="icon-hash"),
+                "screenshots": (
+                    UploadedFileRef(kind="image", file_save_key="shot-1", size=4, file_hash="shot-1-hash"),
+                    UploadedFileRef(kind="image", file_save_key="shot-2", size=5, file_hash="shot-2-hash"),
+                    UploadedFileRef(kind="image", file_save_key="shot-3", size=6, file_hash="shot-3-hash"),
+                ),
+            },
+            target_app_id="",
+        )
+
+        self.assertEqual(payload["app_info"]["app_basic_info"]["website"], "")
 
     def test_build_release_payload_overrides_existing_screenshots_when_uploads_provided(self) -> None:
         app = _app()

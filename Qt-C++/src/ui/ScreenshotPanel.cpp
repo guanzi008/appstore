@@ -2,11 +2,13 @@
 
 #include "core/AppJson.h"
 
+#include <QFont>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QScrollArea>
 #include <QPushButton>
@@ -54,7 +56,7 @@ void ScreenshotPanel::buildUi()
     auto *titleColumn = new QVBoxLayout();
     titleColumn->setContentsMargins(0, 0, 0, 0);
     titleColumn->setSpacing(2);
-    auto *title = new QLabel(QStringLiteral("截图工坊（1050x700 规格预检）"), this);
+    auto *title = new QLabel(QStringLiteral("截图工坊（3:2 / 9:16 规格预检）"), this);
     title->setObjectName(QStringLiteral("CardTitle"));
     m_packageLabel = new QLabel(QStringLiteral("未选择包"), this);
     m_packageLabel->setObjectName(QStringLiteral("MutedText"));
@@ -69,6 +71,10 @@ void ScreenshotPanel::buildUi()
     auto *pasteButton = new QPushButton(style()->standardIcon(QStyle::SP_DialogOpenButton), QStringLiteral("粘贴"), this);
     auto *placeholderButton = new QPushButton(style()->standardIcon(QStyle::SP_FileIcon), QStringLiteral("占位"), this);
     auto *captureButton = new QPushButton(style()->standardIcon(QStyle::SP_ComputerIcon), QStringLiteral("自动截图"), this);
+    QFont captureFont = captureButton->font();
+    captureFont.setStrikeOut(true);
+    captureButton->setFont(captureFont);
+    captureButton->setToolTip(QStringLiteral("自动截图功能目前不可用，请手动添加或粘贴截图后点击“预处理素材”。"));
     for (QPushButton *button : {addButton, pasteButton, placeholderButton, captureButton}) {
         button->setCursor(Qt::PointingHandCursor);
         button->setMinimumHeight(30);
@@ -77,7 +83,12 @@ void ScreenshotPanel::buildUi()
     connect(addButton, &QPushButton::clicked, this, &ScreenshotPanel::addFilesRequested);
     connect(pasteButton, &QPushButton::clicked, this, &ScreenshotPanel::pasteRequested);
     connect(placeholderButton, &QPushButton::clicked, this, &ScreenshotPanel::placeholderRequested);
-    connect(captureButton, &QPushButton::clicked, this, &ScreenshotPanel::captureRequested);
+    connect(captureButton, &QPushButton::clicked, this, [this]() {
+        QMessageBox::information(
+            this,
+            QStringLiteral("自动截图不可用"),
+            QStringLiteral("自动截图功能目前不可用，请手动添加或粘贴截图后点击“预处理素材”。"));
+    });
     layout->addLayout(buttonRow);
 
     m_previewLabel = new QLabel(QStringLiteral("等待截图"), this);
