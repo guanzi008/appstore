@@ -159,6 +159,34 @@ def _find_existing_origin_pkg(
     )
 
 
+def _find_replacement_origin_pkg(
+    existing_app_detail: dict | None,
+    *,
+    package: PackageRecord,
+    package_info: PackageInfo,
+) -> dict | None:
+    detail_data = extract_detail_data(existing_app_detail)
+    expected_type = PKG_TYPE_MAP[(package.package_family, package.package_format)]
+    candidates: list[tuple[int, int, int, dict]] = []
+    for index, origin_pkg in enumerate(detail_data.get("app_origin_pkgs") or ()):
+        if not isinstance(origin_pkg, dict):
+            continue
+        normalized = normalize_origin_pkg(origin_pkg)
+        pkg_name = str(normalized.get("pkg_name", "") or "").strip()
+        if pkg_name and pkg_name != package_info.pkg_name:
+            continue
+        if str(normalized.get("pkgType", "") or "").strip() != str(expected_type):
+            continue
+        if not _origin_pkg_arch_matches(normalized, package_info):
+            continue
+        system_count = len(normalized.get("system_platform") or ())
+        baseline_count = len(normalized.get("baseline") or ())
+        candidates.append((system_count, baseline_count, -index, origin_pkg))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[:3])[3]
+
+
 def _fit_values_from_origin_pkgs(origin_pkgs: list[dict]) -> tuple[list[str], list[str], list[str], list[str]]:
     system_codes: list[str] = []
     baseline_ids: list[str] = []
@@ -335,21 +363,29 @@ def build_release_payload(
                 or _upload_time_label()
             )
         else:
-            origin_pkg = {
-                "pkg_name": package_info.pkg_name,
-                "pkg_version": package_info.pkg_version,
-                "pkg_arch": arch_code,
-                "pkgArch": arch_label,
-                "pkgType": PKG_TYPE_MAP[(package.package_family, package.package_format)],
-                "pkg_mode": 0,
-                "pkgChannel": package.pkg_channel or None,
-                "sums": 0,
-                "pkg_size": package_info.pkg_size,
-                "sha256": package_info.sha256,
-                "file_save_key": upload_ref.file_save_key,
-                "progressPercent": 100,
-                "upload_time": _upload_time_label(),
-            }
+            existing_origin_pkg = _find_replacement_origin_pkg(
+                existing_app_detail,
+                package=package,
+                package_info=package_info,
+            )
+            origin_pkg = normalize_origin_pkg(existing_origin_pkg) if existing_origin_pkg is not None else {}
+            origin_pkg.update(
+                {
+                    "pkg_name": package_info.pkg_name,
+                    "pkg_version": package_info.pkg_version,
+                    "pkg_arch": arch_code,
+                    "pkgArch": arch_label,
+                    "pkgType": PKG_TYPE_MAP[(package.package_family, package.package_format)],
+                    "pkg_mode": 0,
+                    "pkgChannel": package.pkg_channel or origin_pkg.get("pkgChannel") or None,
+                    "sums": 0,
+                    "pkg_size": package_info.pkg_size,
+                    "sha256": package_info.sha256,
+                    "file_save_key": upload_ref.file_save_key,
+                    "progressPercent": 100,
+                    "upload_time": _upload_time_label(),
+                }
+            )
         origin_pkg.update(
             {
                 "pkg_name": package_info.pkg_name,

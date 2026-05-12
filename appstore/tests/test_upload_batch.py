@@ -1551,6 +1551,89 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in report], ["submitted", "submitted"])
         self.assertEqual([row["app_id"] for row in report], ["1096227", "1096227"])
 
+    def test_upload_packages_reuses_existing_arch_system_lines_for_new_package_version(self) -> None:
+        output_dir = self.root / "upload-packages-existing-targets-output"
+        cache_dir = self.root / "capabilities-cache"
+        cache_dir.mkdir()
+        client = FakeClient()
+        client.matches_by_pkg_name["labelnova"] = [{"app_id": "1096227", "id": "detail-id"}]
+        client.detail_by_id["detail-id"] = {
+            "app_basic_info": {
+                "app_name": "LabelNova",
+                "category_id": 1,
+                "website": "https://mm.md/p/",
+                "region": "1",
+                "default_lan": "zh_CN",
+            },
+            "app_lan_infos": [{"lan": "zh_CN", "name": "LabelNova", "brief_info": "旧简介", "desc_info": "旧详情"}],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}, {"code": 21}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": [{"id": "2300"}, {"id": "2500"}],
+            },
+            "app_origin_pkgs": [
+                {
+                    "id": "origin-x86",
+                    "pkg_name": "labelnova",
+                    "pkg_version": "1.0.4-1",
+                    "pkg_arch": "4",
+                    "pkgArch": "X86",
+                    "pkgType": 11,
+                    "pkg_mode": 0,
+                    "pkg_size": 123,
+                    "sha256": "old-sha",
+                    "file_save_key": "old-x86",
+                    "progressPercent": 100,
+                    "supSys": "11,21",
+                    "baseline": [{"system_platform": 11, "id": "2300"}, {"system_platform": 21, "id": "2500"}],
+                    "supBlineVer": "2300,2500",
+                    "systemStr": "社区版V23 专业版V25",
+                }
+            ],
+        }
+
+        with (
+            patch("appstore.upload_batch.AppStoreClient", return_value=client),
+            patch("appstore.upload_batch.load_capability_cache", return_value=self._build_store_capability_cache()),
+            patch(
+                "appstore.upload_batch.read_package_info",
+                return_value=DebPackageInfo(
+                    pkg_name="labelnova",
+                    pkg_version="1.0.5-1",
+                    pkg_arch="amd64",
+                    pkg_size=111,
+                    sha256="sha-amd64",
+                    deb_path=self.deb_paths[0],
+                ),
+            ),
+            patch("appstore.upload_batch.submit_grouped_release", return_value={"datas": {"app_id": "1096227"}}) as submit_mock,
+        ):
+            exit_code = main(
+                [
+                    "upload-packages",
+                    str(self.deb_paths[0]),
+                    "--output-dir",
+                    str(output_dir),
+                    "--capabilities-cache",
+                    str(cache_dir),
+                    "--username",
+                    "demo",
+                    "--password",
+                    "secret",
+                    "--mode",
+                    "api",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        validated_release = submit_mock.call_args.kwargs["validated_release"]
+        targets = validated_release.packages[0].targets
+        self.assertEqual([target.sup_sys_code for target in targets], ["11", "21"])
+        self.assertEqual(targets[0].baseline_ids, ("2300",))
+        self.assertEqual(targets[1].baseline_ids, ("2500",))
+
     def test_main_upload_packages_subcommand_uploads_manual_screenshots_for_existing_app(self) -> None:
         output_dir = self.root / "upload-packages-screenshots-output"
         cache_dir = self.root / "capabilities-cache"

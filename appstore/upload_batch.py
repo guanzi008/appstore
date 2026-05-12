@@ -28,7 +28,8 @@ from appstore.deb import read_deb_package_info
 from appstore.manifest import load_manifest
 from appstore.models import AppRecord, DebPackageInfo, LoadedManifest, PackageRecord, ReleaseRecord, RowResult, TargetRecord, UploadedFileRef
 from appstore.platform_policy import decide_execution_mode
-from appstore.submission import ARCH_CODE_MAP, submit_grouped_release, validate_release_group
+from appstore.submission import ARCH_CODE_MAP, PKG_TYPE_MAP, submit_grouped_release, validate_release_group
+from appstore.update_payload import normalize_origin_pkg
 
 
 @dataclass(frozen=True)
@@ -133,17 +134,6 @@ def _parse_row_filter(raw_value: str | None) -> set[int]:
             continue
         selected_rows.add(int(token))
     return selected_rows
-
-
-def _csv_tokens(value) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    tokens = []
-    for token in str(value).split(","):
-        normalized = token.strip()
-        if normalized:
-            tokens.append(normalized)
-    return tuple(tokens)
 
 
 @dataclass(frozen=True)
@@ -410,24 +400,117 @@ def _build_direct_release(
     )
 
 
-def _existing_pkg_target(existing_app_detail: dict, package_info: DebPackageInfo) -> tuple[str, str, tuple[str, ...]]:
-    detail_packages = existing_app_detail.get("app_origin_pkgs") or []
+def _origin_pkg_arch_matches_existing(origin_pkg: dict, package_info: DebPackageInfo) -> bool:
     arch_code, arch_label = _resolve_arch_code_label(package_info.pkg_arch)
     normalized_label = arch_label.strip().lower()
-    for existing_pkg in detail_packages:
-        pkg_arch_code = str(existing_pkg.get("pkg_arch", "")).strip()
-        pkg_arch_label = str(existing_pkg.get("pkgArch", "")).strip().lower()
-        if pkg_arch_code != arch_code and pkg_arch_label != normalized_label:
+    pkg_arch_code = str(origin_pkg.get("pkg_arch", "")).strip()
+    pkg_arch_label = str(origin_pkg.get("pkgArch", "")).strip().lower()
+    return pkg_arch_code == arch_code or pkg_arch_label == normalized_label
+
+
+def _select_existing_pkg_for_direct_update(
+    existing_app_detail: dict,
+    package_record: PackageRecord,
+    package_info: DebPackageInfo,
+) -> dict | None:
+    detail_packages = existing_app_detail.get("app_origin_pkgs") or []
+    expected_type = PKG_TYPE_MAP[(package_record.package_family, package_record.package_format)]
+    candidates: list[tuple[int, int, int, dict]] = []
+    for index, existing_pkg in enumerate(detail_packages):
+        if not isinstance(existing_pkg, dict):
             continue
-        sup_sys_values = _csv_tokens(existing_pkg.get("supSys"))
-        baseline_values = _csv_tokens(existing_pkg.get("supBlineVer"))
-        unsupported_values = _csv_tokens(existing_pkg.get("unsupportBlineVers"))
-        return (
-            sup_sys_values[0] if sup_sys_values else "",
-            baseline_values[0] if baseline_values else "",
-            unsupported_values,
+        normalized = normalize_origin_pkg(existing_pkg)
+        pkg_name = str(normalized.get("pkg_name", "") or "").strip()
+        if pkg_name and pkg_name != package_info.pkg_name:
+            continue
+        if str(normalized.get("pkgType", "") or "").strip() != str(expected_type):
+            continue
+        if not _origin_pkg_arch_matches_existing(normalized, package_info):
+            continue
+        candidates.append(
+            (
+                len(normalized.get("system_platform") or ()),
+                len(normalized.get("baseline") or ()),
+                -index,
+                existing_pkg,
+            )
         )
-    return "", "", ()
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[:3])[3]
+
+
+def _baseline_ids_for_system(entries, system_code: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for entry in entries or ():
+        if not isinstance(entry, dict):
+            continue
+        entry_system = str(entry.get("system_platform", "") or entry.get("systemPlatform", "")).strip()
+        if entry_system and entry_system != str(system_code):
+            continue
+        baseline_id = str(
+            entry.get("id", "")
+            or entry.get("baseline_id", "")
+            or entry.get("baselineId", "")
+            or entry.get("code", "")
+        ).strip()
+        if baseline_id and baseline_id not in result:
+            result.append(baseline_id)
+    return tuple(result)
+
+
+def _filter_allowed_baseline_ids(
+    baseline_ids: tuple[str, ...],
+    *,
+    capability_cache,
+    package_family: str,
+    sup_sys_code: str,
+) -> tuple[str, ...]:
+    allowed_ids = {
+        option.baseline_id for option in capability_cache.baseline_options.get(f"{package_family}:{sup_sys_code}", ())
+    }
+    if not allowed_ids:
+        return baseline_ids
+    return tuple(baseline_id for baseline_id in baseline_ids if baseline_id in allowed_ids)
+
+
+def _existing_pkg_targets(
+    *,
+    package_record: PackageRecord,
+    existing_pkg: dict,
+    capability_cache,
+) -> tuple[TargetRecord, ...]:
+    normalized = normalize_origin_pkg(existing_pkg)
+    targets: list[TargetRecord] = []
+    for sup_sys_code in normalized.get("system_platform") or ():
+        sup_sys_code = str(sup_sys_code).strip()
+        if not sup_sys_code:
+            continue
+        baseline_ids = _filter_allowed_baseline_ids(
+            _baseline_ids_for_system(normalized.get("baseline"), sup_sys_code),
+            capability_cache=capability_cache,
+            package_family=package_record.package_family,
+            sup_sys_code=sup_sys_code,
+        )
+        unsupported_ids = _filter_allowed_baseline_ids(
+            _baseline_ids_for_system(normalized.get("unsupportBaseline"), sup_sys_code),
+            capability_cache=capability_cache,
+            package_family=package_record.package_family,
+            sup_sys_code=sup_sys_code,
+        )
+        targets.append(
+            TargetRecord(
+                row_id=package_record.row_id,
+                app_key=package_record.app_key,
+                release_key=package_record.release_key,
+                package_key=package_record.package_key,
+                sup_sys_code=sup_sys_code,
+                baseline_id=baseline_ids[0] if baseline_ids else "",
+                unsupport_baseline_ids=unsupported_ids,
+                baseline_ids=baseline_ids,
+            )
+        )
+    return tuple(targets)
 
 
 def _default_sup_sys_code(package_info: DebPackageInfo) -> str:
@@ -444,36 +527,39 @@ def _default_baseline_id(*, capability_cache, package_family: str, sup_sys_code:
     return options[0].baseline_id
 
 
-def _normalize_direct_target(
+def _normalize_direct_targets(
     *,
     package_record: PackageRecord,
     package_info: DebPackageInfo,
     existing_app_detail: dict,
     capability_cache,
-) -> TargetRecord:
-    sup_sys_code, baseline_id, unsupported_ids = _existing_pkg_target(existing_app_detail, package_info)
-    if not sup_sys_code:
-        sup_sys_code = _default_sup_sys_code(package_info)
-    allowed_ids = {
-        option.baseline_id for option in capability_cache.baseline_options.get(f"{package_record.package_family}:{sup_sys_code}", ())
-    }
-    if baseline_id and allowed_ids and baseline_id not in allowed_ids:
-        baseline_id = ""
-    if not baseline_id:
-        baseline_id = _default_baseline_id(
+) -> tuple[TargetRecord, ...]:
+    existing_pkg = _select_existing_pkg_for_direct_update(existing_app_detail, package_record, package_info)
+    if existing_pkg is not None:
+        targets = _existing_pkg_targets(
+            package_record=package_record,
+            existing_pkg=existing_pkg,
             capability_cache=capability_cache,
-            package_family=package_record.package_family,
-            sup_sys_code=sup_sys_code,
         )
-    unsupported_ids = tuple(baseline for baseline in unsupported_ids if not allowed_ids or baseline in allowed_ids)
-    return TargetRecord(
-        row_id=package_record.row_id,
-        app_key=package_record.app_key,
-        release_key=package_record.release_key,
-        package_key=package_record.package_key,
+        if targets:
+            return targets
+
+    sup_sys_code = _default_sup_sys_code(package_info)
+    baseline_id = _default_baseline_id(
+        capability_cache=capability_cache,
+        package_family=package_record.package_family,
         sup_sys_code=sup_sys_code,
-        baseline_id=baseline_id,
-        unsupport_baseline_ids=unsupported_ids,
+    )
+    return (
+        TargetRecord(
+            row_id=package_record.row_id,
+            app_key=package_record.app_key,
+            release_key=package_record.release_key,
+            package_key=package_record.package_key,
+            sup_sys_code=sup_sys_code,
+            baseline_id=baseline_id,
+            baseline_ids=(baseline_id,) if baseline_id else (),
+        ),
     )
 
 
@@ -1134,13 +1220,11 @@ def _run_direct_upload_packages(
             package_infos=list(package_infos.values()),
         )
         targets_by_package = {
-            package.package_key: (
-                _normalize_direct_target(
-                    package_record=package,
-                    package_info=package_infos[package.package_key],
-                    existing_app_detail=existing_app_detail,
-                    capability_cache=capability_cache,
-                ),
+            package.package_key: _normalize_direct_targets(
+                package_record=package,
+                package_info=package_infos[package.package_key],
+                existing_app_detail=existing_app_detail,
+                capability_cache=capability_cache,
             )
             for package in packages
         }

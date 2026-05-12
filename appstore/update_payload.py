@@ -6,6 +6,23 @@ from appstore.models import UploadedFileRef
 from appstore.translation import LANGUAGE_LABELS
 
 
+_PRESERVED_ORIGIN_PKG_KEYS = (
+    "id",
+    "app_id",
+    "appId",
+    "app_info_id",
+    "appInfoId",
+    "app_origin_pkg_id",
+    "appOriginPkgId",
+    "origin_pkg_id",
+    "originPkgId",
+    "package_id",
+    "packageId",
+    "pkg_id",
+    "pkgId",
+)
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -349,7 +366,7 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
         unsupported_ids,
     )
 
-    return {
+    normalized = {
         "pkg_name": _text(origin_pkg.get("pkg_name")),
         "pkg_version": _text(origin_pkg.get("pkg_version")),
         "pkg_arch": _text(origin_pkg.get("pkg_arch")),
@@ -370,6 +387,10 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
         "unsupportBlineVers": ",".join(unsupported_ids),
         "systemStr": _text(origin_pkg.get("systemStr")),
     }
+    for key in _PRESERVED_ORIGIN_PKG_KEYS:
+        if key in origin_pkg and origin_pkg[key] not in (None, ""):
+            normalized[key] = origin_pkg[key]
+    return normalized
 
 
 def _origin_pkg_identity(origin_pkg: dict) -> tuple[str, str, str, str]:
@@ -389,6 +410,14 @@ def _origin_pkg_package_identity(origin_pkg: dict) -> tuple[str, str, str]:
         _text(normalized.get("pkg_arch")),
         _text(normalized.get("pkgType")),
     )
+
+
+def _origin_pkg_persistent_identity(origin_pkg: dict) -> tuple[str, str]:
+    for key in _PRESERVED_ORIGIN_PKG_KEYS:
+        value = _text(origin_pkg.get(key))
+        if value:
+            return key, value
+    return "", ""
 
 
 def _entry_system_code(entry: Any) -> str:
@@ -436,9 +465,14 @@ def merge_origin_pkgs(existing_app_detail: dict | None, new_origin_pkgs: list[di
         normalized = normalize_origin_pkg(origin_pkg)
         identity = _origin_pkg_identity(normalized)
         package_identity = _origin_pkg_package_identity(normalized)
+        persistent_identity = _origin_pkg_persistent_identity(normalized)
         replacement_codes = {_text(code) for code in (normalized.get("system_platform") or []) if _text(code)}
         next_merged: list[dict] = []
         for index, existing in enumerate(merged):
+            if persistent_identity[0] and _origin_pkg_persistent_identity(existing) == persistent_identity:
+                next_merged.append(normalized)
+                next_merged.extend(merged[index + 1 :])
+                break
             if _origin_pkg_identity(existing) == identity:
                 next_merged.append(normalized)
                 next_merged.extend(merged[index + 1 :])

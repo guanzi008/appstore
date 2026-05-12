@@ -247,6 +247,91 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["name"], "新名称")
         self.assertEqual(payload["app_info"]["app_lan_infos"][0]["update_desc"], "只更新文案和系统线")
 
+    def test_build_release_payload_updates_existing_package_row_when_version_changes(self) -> None:
+        app = _app()
+        release = ReleaseRecord(
+            row_id=2,
+            app_key="demo",
+            release_key="stable",
+            release_name="稳定版",
+            region="1",
+            note="更新包",
+        )
+        packages = (
+            PackageRecord(
+                20,
+                "demo",
+                "stable",
+                "pkg-new-x86",
+                "deb",
+                "deb",
+                Path("/tmp/demo_3.3.6_amd64.deb"),
+                declared_arch="amd64",
+            ),
+        )
+        inspected = {
+            "pkg-new-x86": PackageInfo("demo", "3.3.6", "amd64", 20, "new-hash", packages[0].file_path),
+        }
+        targets = {
+            "pkg-new-x86": (
+                TargetRecord(30, "demo", "stable", "pkg-new-x86", "11", baseline_ids=("2300",)),
+                TargetRecord(31, "demo", "stable", "pkg-new-x86", "21", baseline_ids=("2500",)),
+            ),
+        }
+        validated = validate_release_group(app, release, packages, targets, inspected, _cache())
+        existing_detail = {
+            "app_basic_info": {"category_id": 9, "website": "https://existing.example/demo", "region": "1"},
+            "app_lan_infos": [{"lan": "zh_CN", "name": "旧名称", "brief_info": "旧简介", "desc_info": "旧详情"}],
+            "app_fit_info": {
+                "system_mode": [{"code": 1}],
+                "system_platform": [{"code": 11}, {"code": 21}],
+                "region": [{"code": 1}],
+                "arch": [{"code": 4}],
+                "baseline": [{"id": "2300"}, {"id": "2500"}],
+            },
+            "app_origin_pkgs": [
+                {
+                    "id": "origin-row-x86",
+                    "pkg_name": "demo",
+                    "pkg_version": "3.3.3",
+                    "pkg_arch": "4",
+                    "pkgArch": "X86",
+                    "pkgType": 11,
+                    "pkg_mode": 0,
+                    "pkg_size": 10,
+                    "sha256": "old-hash",
+                    "file_save_key": "old-x86",
+                    "progressPercent": 100,
+                    "supSys": "11,21",
+                    "baseline": [{"system_platform": 11, "id": "2300"}, {"system_platform": 21, "id": "2500"}],
+                    "supBlineVer": "2300,2500",
+                    "systemStr": "社区版V23 专业版V25",
+                }
+            ],
+        }
+
+        payload = build_release_payload(
+            validated,
+            uploads_by_package={
+                "pkg-new-x86": UploadedFileRef(kind="temppkg", file_save_key="new-x86", size=20, file_hash="new-hash"),
+            },
+            app_uploads=None,
+            target_app_id="42",
+            existing_app_detail=existing_detail,
+        )
+
+        origin_pkgs = payload["app_info"]["app_origin_pkgs"]
+        self.assertEqual(len(origin_pkgs), 1)
+        self.assertEqual(origin_pkgs[0]["id"], "origin-row-x86")
+        self.assertEqual(origin_pkgs[0]["pkg_version"], "3.3.6")
+        self.assertEqual(origin_pkgs[0]["file_save_key"], "new-x86")
+        self.assertEqual(origin_pkgs[0]["system_platform"], ["11", "21"])
+        self.assertEqual(
+            origin_pkgs[0]["baseline"],
+            [{"system_platform": 11, "id": "2300"}, {"system_platform": 21, "id": "2500"}],
+        )
+        self.assertEqual(payload["app_info"]["app_fit_info"]["system_platform"], [{"code": 11}, {"code": 21}])
+
     def test_build_release_payload_carries_cpu_and_motherboard_fit_options(self) -> None:
         app = _app()
         release = ReleaseRecord(
