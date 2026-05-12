@@ -1,19 +1,20 @@
 # appstore
 
-这是从 `/home/hao/Documents/ai/WWW/appstore` 独立出来的项目。
+这是用于统信/deepin UOS 应用商店发布与更新的工具集。
 
 快速开始：
 
 ```bash
-cd /home/hao/Documents/ai/appstore
+git clone https://github.com/guanzi008/appstore.git
+cd appstore
 python3 -m pip install -r requirements.txt
 python3 -m appstore.upload_batch --help
 ```
 
 文档入口：
 
-- 中文说明：[appstore/README.zh-CN.md](appstore/README.zh-CN.md)
-- 英文说明：[appstore/README.md](appstore/README.md)
+- 中文说明：[README.zh-CN.md](README.zh-CN.md)
+- 英文说明：[README.md](README.md)
 
 ## GitHub Action
 

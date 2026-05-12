@@ -28,7 +28,8 @@
 推荐使用 Qt6：
 
 ```bash
-cd /home/hao/Documents/ai/appstore
+git clone https://github.com/guanzi008/appstore.git
+cd appstore
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r appstore/requirements.txt PySide6
 ./.venv/bin/python -m ui.main

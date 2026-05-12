@@ -1,19 +1,20 @@
 # appstore
 
-Standalone project extracted from `/home/hao/Documents/ai/WWW/appstore`.
+Standalone UnionTech/deepin UOS app store publishing toolkit.
 
 Quick start:
 
 ```bash
-cd /home/hao/Documents/ai/appstore
+git clone https://github.com/guanzi008/appstore.git
+cd appstore
 python3 -m pip install -r requirements.txt
 python3 -m appstore.upload_batch --help
 ```
 
 Docs:
 
-- Chinese: [appstore/README.zh-CN.md](appstore/README.zh-CN.md)
-- English: [appstore/README.md](appstore/README.md)
+- Chinese: [README.zh-CN.md](README.zh-CN.md)
+- English: [README.md](README.md)
 
 ## GitHub Action
 
