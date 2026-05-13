@@ -274,6 +274,7 @@ QJsonObject copyEditableOnlineFields(QJsonObject target, const QJsonObject &sour
     static const QStringList alwaysCopyKeys = {
         QStringLiteral("app_name_zh"),
         QStringLiteral("website"),
+        QStringLiteral("developer_name"),
         QStringLiteral("short_desc_zh"),
         QStringLiteral("full_desc_zh"),
         QStringLiteral("note_zh"),
@@ -396,7 +397,10 @@ void MainWindow::buildUi()
     rootLayout->addWidget(m_sidebar);
     connect(m_sidebar, &SidebarWidget::loginRequested, this, &MainWindow::loginByWechat);
     connect(m_sidebar, &SidebarWidget::logoutRequested, this, &MainWindow::logout);
-    connect(m_sidebar, &SidebarWidget::refreshMyAppsRequested, this, &MainWindow::listMyApps);
+    connect(m_sidebar, &SidebarWidget::refreshMyAppsRequested, this, [this]() {
+        clearCurrentWorkspace(true, QStringLiteral("已回到我的应用列表，当前未选择应用或本地包。"));
+        listMyApps();
+    });
     connect(m_sidebar, &SidebarWidget::loadMoreMyAppsRequested, this, &MainWindow::loadMoreMyApps);
     connect(m_sidebar, &SidebarWidget::onlineAppSelected, this, &MainWindow::selectOnlineApp);
     connect(m_sidebar, &SidebarWidget::groupSelected, this, [this](const QString &key) {
@@ -780,6 +784,26 @@ void MainWindow::setCurrentGroup(const QJsonObject &group)
     renderSidebar();
 }
 
+void MainWindow::clearCurrentWorkspace(bool clearOnlineSelection, const QString &statusText)
+{
+    m_groups = {};
+    m_currentGroup = {};
+    m_selectedPackagePath.clear();
+    if (clearOnlineSelection) {
+        m_selectedOnlineApp = {};
+        m_sidebar->clearCurrentSelection();
+    }
+    renderCurrentGroup();
+    renderSidebar();
+    m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("idle"), QStringLiteral("等待"));
+    m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("idle"), QStringLiteral("等待"));
+    m_sidebar->setTaskState(QStringLiteral("submit"), QStringLiteral("idle"), QStringLiteral("等待"));
+    m_workflowBar->setStepStates(StepState::Idle, StepState::Idle, StepState::Idle, StepState::Idle);
+    if (!statusText.isEmpty()) {
+        m_workflowBar->setStatusText(statusText);
+    }
+}
+
 void MainWindow::persistCurrentGroupFromUi()
 {
     if (m_currentGroup.isEmpty()) {
@@ -875,6 +899,9 @@ QJsonObject MainWindow::normalizedGroup(QJsonObject group) const
     }
     if (!group.contains(QStringLiteral("website"))) {
         group.insert(QStringLiteral("website"), group.value(QStringLiteral("homepage")).toString());
+    }
+    if (!group.contains(QStringLiteral("developer_name"))) {
+        group.insert(QStringLiteral("developer_name"), group.value(QStringLiteral("dev_name")).toString());
     }
     if (!group.contains(QStringLiteral("region_codes"))) {
         group.insert(QStringLiteral("region_codes"), QJsonArray{QStringLiteral("1")});
@@ -1226,9 +1253,9 @@ void MainWindow::generatePlaceholderScreenshots()
 
 void MainWindow::selectOnlineApp(const QJsonObject &app)
 {
-    persistCurrentGroupFromUi();
     m_selectedOnlineApp = app;
     const QString appName = AppJson::stringValue(app, QStringLiteral("app_name"), app.value(QStringLiteral("pkg_name")).toString(QStringLiteral("我的应用")));
+    clearCurrentWorkspace(false, QStringLiteral("正在切换到我的应用：%1。本地包选择已清空。").arg(appName));
     if (m_preferredAccount.isEmpty()) {
         m_workflowBar->setStatusText(QStringLiteral("请先登录后再读取应用详情。"));
         return;

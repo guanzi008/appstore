@@ -20,6 +20,7 @@ public:
     void setOnlineApps(const QJsonArray &apps, int total, bool loading = false, const QString &message = {});
     void setLoginState(bool loggedIn, const QString &accountLabel);
     void setTaskState(const QString &taskKey, const QString &state, const QString &detail = {});
+    void clearCurrentSelection();
 
 signals:
     void loginRequested();

@@ -910,6 +910,7 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
                 existing_app_overrides={"app_name_zh": "Demo"},
                 desired_lans=("zh_CN",),
                 localized_lan_texts={"zh_CN": {"name": "Demo"}},
+                developer_name="",
                 cpu_clip_codes=None,
                 motherboard_codes=None,
                 log=None,
@@ -1022,6 +1023,7 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
                         "brief_info": "中文简介",
                         "desc_info": "中文详情",
                         "update_desc": "中文更新说明",
+                        "dev_name": "中文开发者",
                     },
                     {
                         "lan": "en_US",
@@ -1040,6 +1042,7 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
         self.assertEqual(defaults["website"], "https://example.test")
         self.assertEqual(defaults["category_id"], "12")
         self.assertEqual(defaults["region_codes"], ("1", "2"))
+        self.assertEqual(defaults["developer_name"], "中文开发者")
         self.assertEqual(defaults["app_name_en"], "English Name")
         self.assertEqual(defaults["short_desc_en"], "English brief")
         self.assertEqual(defaults["full_desc_en"], "English detail")

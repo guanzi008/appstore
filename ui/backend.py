@@ -113,6 +113,7 @@ class BatchGroupSubmissionPlan:
     short_desc_en: str = ""
     full_desc_en: str = ""
     note_en: str = ""
+    developer_name: str = ""
     auto_translate_en: bool = True
     manual_screenshot_paths: tuple[Path, ...] = ()
     prepared_icon_path: Path | None = None
@@ -548,6 +549,7 @@ def build_existing_detail_editor_defaults(
         "region_codes": tuple(str(code).strip() for code in (defaults.get("region_codes") or ()) if str(code).strip())
         or ("1",),
         "note_zh": str(existing_zh.get("update_desc", "")).strip(),
+        "developer_name": str(existing_zh.get("dev_name", "") or existing_en.get("dev_name", "")).strip(),
         "app_name_en": str(existing_en.get("name", "")).strip(),
         "short_desc_en": str(existing_en.get("brief_info", "")).strip(),
         "full_desc_en": str(existing_en.get("desc_info", "")).strip(),
@@ -709,6 +711,7 @@ def submit_new_application(
             existing_app_detail=None,
             log=log,
         ),
+        developer_name="",
         cpu_clip_codes=None,
         motherboard_codes=None,
         log=log,
@@ -787,6 +790,7 @@ def submit_existing_application(
             existing_app_detail=existing_app_detail,
             log=log,
         ),
+        developer_name="",
         cpu_clip_codes=None,
         motherboard_codes=None,
         log=log,
@@ -922,6 +926,7 @@ def _submit_batch_update_plan(
     match = plan.selected_match or _resolve_batch_existing_match(login.client, package_group=package_group)
     existing_app_detail = fetch_existing_app_detail(login.client, match, log=log)
     note_zh = plan.note_zh.strip() or note.strip()
+    developer_name = plan.developer_name.strip()
     if plan.metadata_edited:
         category_id = _parse_batch_category_id(plan.category_id)
         region_codes = _normalize_batch_region_codes(plan.region_codes)
@@ -936,6 +941,8 @@ def _submit_batch_update_plan(
             "full_desc_zh": full_desc_zh,
             "category_id": category_id,
         }
+        if developer_name:
+            existing_overrides["developer_name"] = developer_name
     else:
         defaults = _existing_update_defaults(existing_app_detail, fallback_name=package_group.display_name)
         category_id = int(defaults["category_id"])
@@ -944,6 +951,7 @@ def _submit_batch_update_plan(
         website = str(defaults["website"])
         short_desc_zh = str(defaults["short_desc_zh"])
         full_desc_zh = str(defaults["full_desc_zh"])
+        developer_name = developer_name or str(defaults.get("developer_name", "")).strip()
         existing_overrides = None
     if plan.replace_assets:
         assets = _resolve_batch_assets(
@@ -996,6 +1004,7 @@ def _submit_batch_update_plan(
             allow_auto_translate=plan.auto_translate_en,
             log=log,
         ),
+        developer_name=developer_name,
         cpu_clip_codes=plan.cpu_clip_codes,
         motherboard_codes=plan.motherboard_codes,
         log=log,
@@ -1063,6 +1072,7 @@ def _submit_batch_new_plan(
             allow_auto_translate=plan.auto_translate_en,
             log=log,
         ),
+        developer_name=plan.developer_name.strip(),
         cpu_clip_codes=plan.cpu_clip_codes,
         motherboard_codes=plan.motherboard_codes,
         log=log,
@@ -1170,6 +1180,7 @@ def _submit_grouped_release(
     existing_app_overrides: dict[str, object] | None,
     desired_lans: tuple[str, ...],
     localized_lan_texts: dict[str, dict[str, str]],
+    developer_name: str,
     cpu_clip_codes: tuple[str, ...] | None,
     motherboard_codes: tuple[str, ...] | None,
     log: Callable[[str], None] | None,
@@ -1312,6 +1323,7 @@ def _submit_grouped_release(
         existing_app_overrides=existing_app_overrides,
         localized_lan_texts=localized_lan_texts,
         desired_lans=desired_lans,
+        developer_name=developer_name.strip(),
     )
 
     rows = _make_result_rows(
@@ -1411,6 +1423,7 @@ def _existing_update_defaults(existing_app_detail: dict, *, fallback_name: str) 
         region_codes = tuple(token.strip() for token in str(basic_info.get("region") or "1").split(",") if token.strip()) or ("1",)
     return {
         "app_name_zh": str(lan_info.get("name", "")).strip() or fallback_name.strip(),
+        "developer_name": str(lan_info.get("dev_name", "")).strip(),
         "website": str(basic_info.get("website", "")).strip(),
         "short_desc_zh": str(lan_info.get("brief_info", "")).strip(),
         "full_desc_zh": str(lan_info.get("desc_info", "")).strip(),

@@ -47,6 +47,7 @@ private:
     QLineEdit *m_appNameEdit = nullptr;
     QLineEdit *m_appNameEnEdit = nullptr;
     QLineEdit *m_websiteEdit = nullptr;
+    QLineEdit *m_developerNameEdit = nullptr;
     QLineEdit *m_shortDescEdit = nullptr;
     QLineEdit *m_shortDescEnEdit = nullptr;
     QTextEdit *m_fullDescEdit = nullptr;

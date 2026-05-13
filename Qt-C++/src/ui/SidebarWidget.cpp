@@ -244,6 +244,13 @@ void SidebarWidget::setLoginState(bool loggedIn, const QString &accountLabel)
     setTaskState(QStringLiteral("login"), loggedIn ? QStringLiteral("done") : QStringLiteral("idle"), loggedIn ? QStringLiteral("会话有效") : QStringLiteral("等待凭据"));
 }
 
+void SidebarWidget::clearCurrentSelection()
+{
+    m_currentKey.clear();
+    m_selectedOnlineAppId.clear();
+    renderGroups();
+}
+
 void SidebarWidget::setTaskState(const QString &taskKey, const QString &state, const QString &detail)
 {
     QLabel *label = taskLabelForKey(taskKey);

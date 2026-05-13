@@ -278,7 +278,7 @@ def build_reused_lan_infos(
                 "brief_info": _text(localized.get("brief_info")) or _text(info.get("brief_info")),
                 "desc_info": _text(localized.get("desc_info")) or _text(info.get("desc_info")),
                 "update_desc": _text(localized.get("update_desc")) or release_note.strip() or _text(info.get("update_desc")),
-                "dev_name": _text(info.get("dev_name")) or _text(developer_name),
+                "dev_name": _text(developer_name) or _text(info.get("dev_name")),
                 "icon_save_key": icon_upload.file_save_key if icon_upload is not None else _text(info.get("icon_save_key")),
                 "appScreenShotList": screenshots,
             }

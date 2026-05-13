@@ -665,6 +665,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
     cpu_codes = _dedupe(_code_items(fit_info.get("cpu_clip")))
     motherboard_codes = _dedupe(_code_items(fit_info.get("motherboard")))
     app_name = str(defaults.get("app_name_zh", "") or match.app_name or match.pkg_name).strip()
+    developer_name = str(defaults.get("developer_name", "") or "").strip()
     pkg_name = match.pkg_name or str(data.get("pkg_name", "") or "").strip() or app_name
     icon_path = str(defaults.get("icon_path", "") or "").strip()
     packages = _online_packages_from_detail(
@@ -702,6 +703,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
         "selected_match_app_id": match.app_id,
         "submission_mode": "update",
         "app_name_zh": app_name,
+        "developer_name": developer_name,
         "website": str(defaults.get("website", "") or "").strip(),
         "short_desc_zh": str(defaults.get("short_desc_zh", "") or "").strip(),
         "full_desc_zh": str(defaults.get("full_desc_zh", "") or "").strip(),
@@ -874,6 +876,7 @@ def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> di
     always_copy_keys = (
         "app_name_zh",
         "website",
+        "developer_name",
         "short_desc_zh",
         "full_desc_zh",
         "note_zh",
@@ -1356,6 +1359,7 @@ def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPla
         asset_dir=asset_dir,
         replace_assets=bool(group_payload.get("replace_assets", False)),
         note_zh=str(group_payload.get("note_zh", "")).strip(),
+        developer_name=str(group_payload.get("developer_name", "")).strip(),
         app_name_en=str(group_payload.get("app_name_en", "")).strip(),
         short_desc_en=str(group_payload.get("short_desc_en", "")).strip(),
         full_desc_en=str(group_payload.get("full_desc_en", "")).strip(),

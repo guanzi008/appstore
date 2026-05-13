@@ -99,6 +99,7 @@ class GroupedSubmissionTests(unittest.TestCase):
                     "brief_info": "旧简介",
                     "desc_info": "旧详情",
                     "update_desc": "旧更新说明",
+                    "dev_name": "旧开发者",
                     "icon_save_key": "existing-icon",
                     "appScreenShotList": [
                         {"screen_shot_key": "existing-shot-1", "image_mode": 1, "sort": 0},
@@ -520,6 +521,7 @@ class GroupedSubmissionTests(unittest.TestCase):
                 "app_name_zh": "新名称",
                 "short_desc_zh": "新简介",
                 "full_desc_zh": "新详情",
+                "developer_name": "新开发者",
                 "category_id": 3,
                 "website": "https://override.example/demo",
             },
@@ -530,6 +532,7 @@ class GroupedSubmissionTests(unittest.TestCase):
         self.assertEqual(lan_info["brief_info"], "新简介")
         self.assertEqual(lan_info["desc_info"], "新详情")
         self.assertEqual(lan_info["update_desc"], "改基础信息")
+        self.assertEqual(lan_info["dev_name"], "新开发者")
         self.assertEqual(payload["app_info"]["app_basic_info"]["category_id"], 3)
         self.assertEqual(payload["app_info"]["app_basic_info"]["website"], "https://override.example/demo")
         self.assertEqual(payload["app_info"]["app_basic_info"]["region"], "1,2")

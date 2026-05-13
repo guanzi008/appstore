@@ -204,13 +204,18 @@ void MetadataPanel::buildUi()
     m_categoryCombo = new QComboBox(this);
     m_websiteEdit = new QLineEdit(this);
     m_websiteEdit->setPlaceholderText(QStringLiteral("官网或项目地址"));
+    m_developerNameEdit = new QLineEdit(this);
+    m_developerNameEdit->setPlaceholderText(QStringLiteral("开发者名称"));
     configureLineEdit(m_websiteEdit);
+    configureLineEdit(m_developerNameEdit);
     configureComboBox(m_categoryCombo);
 
     formGrid->addWidget(makeCaption(QStringLiteral("官网"), this), 0, 0);
     formGrid->addWidget(m_websiteEdit, 0, 1);
     formGrid->addWidget(makeCaption(QStringLiteral("分类"), this), 0, 2);
     formGrid->addWidget(m_categoryCombo, 0, 3);
+    formGrid->addWidget(makeCaption(QStringLiteral("开发者"), this), 1, 0);
+    formGrid->addWidget(m_developerNameEdit, 1, 1, 1, 3);
 
     m_languageTabs = new QTabWidget(this);
     m_languageTabs->setObjectName(QStringLiteral("LanguageTabs"));
@@ -278,7 +283,7 @@ void MetadataPanel::buildUi()
     enGrid->addWidget(makeCaption(QStringLiteral("Note"), enPage), 3, 0);
     enGrid->addWidget(m_noteEnEdit, 3, 1);
     m_languageTabs->addTab(enPage, QStringLiteral("English Copy"));
-    formGrid->addWidget(m_languageTabs, 1, 0, 1, 4);
+    formGrid->addWidget(m_languageTabs, 2, 0, 1, 4);
 
     auto *regionHost = new QWidget(this);
     regionHost->setObjectName(QStringLiteral("InlineControls"));
@@ -341,6 +346,7 @@ void MetadataPanel::setGroup(const QJsonObject &group)
 
     m_appNameEdit->setText(AppJson::stringValue(group, QStringLiteral("app_name_zh"), AppJson::displayName(group)));
     m_websiteEdit->setText(AppJson::stringValue(group, QStringLiteral("website"), group.value(QStringLiteral("homepage")).toString()));
+    m_developerNameEdit->setText(AppJson::stringValue(group, QStringLiteral("developer_name"), group.value(QStringLiteral("dev_name")).toString()));
     m_shortDescEdit->setText(AppJson::stringValue(group, QStringLiteral("short_desc_zh"), group.value(QStringLiteral("short_description")).toString()));
     m_fullDescEdit->setPlainText(AppJson::stringValue(group, QStringLiteral("full_desc_zh"), group.value(QStringLiteral("full_description")).toString()));
     m_noteEdit->setPlainText(group.value(QStringLiteral("note_zh")).toString());
@@ -377,6 +383,7 @@ QJsonObject MetadataPanel::groupFromUi(const QJsonObject &baseGroup) const
     QJsonObject group = baseGroup;
     group.insert(QStringLiteral("app_name_zh"), m_appNameEdit->text().trimmed());
     group.insert(QStringLiteral("website"), m_websiteEdit->text().trimmed());
+    group.insert(QStringLiteral("developer_name"), m_developerNameEdit->text().trimmed());
     group.insert(QStringLiteral("short_desc_zh"), m_shortDescEdit->text().trimmed());
     group.insert(QStringLiteral("full_desc_zh"), m_fullDescEdit->toPlainText().trimmed());
     group.insert(QStringLiteral("note_zh"), m_noteEdit->toPlainText().trimmed());

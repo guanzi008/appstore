@@ -448,6 +448,11 @@ def build_release_payload(
                 ),
                 localized_texts=localized_lan_texts,
                 desired_lans=desired_lans,
+                developer_name=(
+                    str(overrides["developer_name"]).strip()
+                    if "developer_name" in overrides and overrides["developer_name"] is not None
+                    else developer_name
+                ),
             ),
             "app_basic_info": build_reused_basic_info(
                 existing_app_detail,
@@ -540,9 +545,10 @@ def submit_grouped_release(
     existing_app_overrides: dict[str, object] | None = None,
     localized_lan_texts: dict[str, dict[str, str]] | None = None,
     desired_lans: tuple[str, ...] | None = None,
+    developer_name: str = "",
 ) -> dict:
-    developer_name = ""
-    if existing_app_detail is None:
+    developer_name = developer_name.strip()
+    if existing_app_detail is None and not developer_name:
         dev_info = client.fetch_dev_info()
         developer_name = (
             str(dev_info.get("enterprise_name", "") or "").strip()

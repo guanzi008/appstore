@@ -40,6 +40,7 @@ private:
 
     void applySessionData(const QJsonObject &data);
     void setCurrentGroup(const QJsonObject &group);
+    void clearCurrentWorkspace(bool clearOnlineSelection, const QString &statusText = {});
     void persistCurrentGroupFromUi();
     void renderCurrentGroup();
     void renderSidebar();
