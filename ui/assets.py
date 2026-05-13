@@ -241,10 +241,9 @@ def _screenshot_normalize_filters(source: Path) -> str:
         min_width, min_height, max_width, max_height = LANDSCAPE_SCREENSHOT_SIZE
         ratio_width, ratio_height = 3, 2
 
-    crop_x, crop_y, crop_width, crop_height = _center_crop_to_ratio(width, height, ratio_width, ratio_height)
     target_width, target_height = _bounded_size_for_ratio(
-        crop_width,
-        crop_height,
+        width,
+        height,
         min_width,
         min_height,
         max_width,
@@ -253,23 +252,11 @@ def _screenshot_normalize_filters(source: Path) -> str:
         ratio_height,
     )
     return (
-        f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
-        f"scale={target_width}:{target_height}:flags=lanczos"
+        f"scale={target_width}:{target_height}:"
+        "force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        "setsar=1"
     )
-
-
-def _center_crop_to_ratio(width: int, height: int, ratio_width: int, ratio_height: int) -> tuple[int, int, int, int]:
-    target_ratio = ratio_width / ratio_height
-    current_ratio = width / height
-    if current_ratio > target_ratio:
-        crop_width = max(1, round(height * target_ratio))
-        x = max(0, (width - crop_width) // 2)
-        return x, 0, crop_width, height
-    if current_ratio < target_ratio:
-        crop_height = max(1, round(width / target_ratio))
-        y = max(0, (height - crop_height) // 2)
-        return 0, y, width, crop_height
-    return 0, 0, width, height
 
 
 def _bounded_size_for_ratio(
@@ -282,23 +269,33 @@ def _bounded_size_for_ratio(
     ratio_width: int,
     ratio_height: int,
 ) -> tuple[int, int]:
-    scale = 1.0
-    if width > max_width or height > max_height:
-        scale = min(max_width / width, max_height / height)
-    if width * scale < min_width or height * scale < min_height:
-        scale = max(scale, min_width / width, min_height / height)
+    target_ratio = ratio_width / ratio_height
+    current_ratio = width / height
 
-    target_width = max(min_width, min(max_width, round(width * scale)))
-    target_height = round(target_width * ratio_height / ratio_width)
-    if target_height > max_height:
-        target_height = max_height
+    if current_ratio >= target_ratio:
+        target_width = _clamp(width, min_width, max_width)
+        target_height = round(target_width * ratio_height / ratio_width)
+        if target_height < min_height:
+            target_height = min_height
+            target_width = round(target_height * ratio_width / ratio_height)
+        elif target_height > max_height:
+            target_height = max_height
+            target_width = round(target_height * ratio_width / ratio_height)
+    else:
+        target_height = _clamp(height, min_height, max_height)
         target_width = round(target_height * ratio_width / ratio_height)
-    if target_height < min_height:
-        target_height = min_height
-        target_width = round(target_height * ratio_width / ratio_height)
-    target_width = max(min_width, min(max_width, target_width))
-    target_height = max(min_height, min(max_height, target_height))
+        if target_width < min_width:
+            target_width = min_width
+            target_height = round(target_width * ratio_height / ratio_width)
+        elif target_width > max_width:
+            target_width = max_width
+            target_height = round(target_width * ratio_height / ratio_width)
+
     return target_width, target_height
+
+
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
 
 
 def _probe_dimensions(path: Path) -> tuple[int, int]:

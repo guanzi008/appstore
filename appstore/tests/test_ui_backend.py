@@ -1,4 +1,5 @@
 import json
+import subprocess
 import struct
 import tempfile
 import unittest
@@ -109,6 +110,29 @@ class UiBackendCacheTests(unittest.TestCase):
             raise RuntimeError(f"not a PNG image: {path}")
         return struct.unpack(">II", data[16:24])
 
+    @staticmethod
+    def _rgb_pixel(path: Path, x: int, y: int, width: int) -> tuple[int, int, int]:
+        completed = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-frames:v",
+                "1",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        offset = (y * width + x) * 3
+        return tuple(completed.stdout[offset : offset + 3])
+
     def test_prepare_screenshot_normalizes_landscape_to_store_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -118,8 +142,10 @@ class UiBackendCacheTests(unittest.TestCase):
             result = _prepare_screenshot(source, root / "out" / "screen")
             width, height = self._png_size(result)
 
-            self.assertEqual((width, height), (1620, 1080))
+            self.assertEqual((width, height), (1920, 1280))
             self.assertEqual(width * 2, height * 3)
+            self.assertEqual(self._rgb_pixel(result, 0, 0, width), (0, 0, 0))
+            self.assertEqual(self._rgb_pixel(result, width // 2, height // 2, width), (70, 120, 180))
             self.assertTrue(result.exists())
 
     def test_prepare_screenshot_normalizes_portrait_to_store_ratio(self) -> None:
@@ -133,6 +159,8 @@ class UiBackendCacheTests(unittest.TestCase):
 
             self.assertEqual((width, height), (900, 1600))
             self.assertEqual(width * 16, height * 9)
+            self.assertEqual(self._rgb_pixel(result, 0, 0, width), (0, 0, 0))
+            self.assertEqual(self._rgb_pixel(result, width // 2, height // 2, width), (70, 120, 180))
             self.assertTrue(result.exists())
 
     def test_prepare_icon_normalizes_without_qt_bindings(self) -> None:
