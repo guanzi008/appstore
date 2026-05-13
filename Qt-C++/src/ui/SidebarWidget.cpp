@@ -129,7 +129,7 @@ void SidebarWidget::buildUi()
     brandIcon->setObjectName(QStringLiteral("BrandIcon"));
     brandIcon->setAlignment(Qt::AlignCenter);
     brandIcon->setFixedSize(46, 46);
-    auto *brandTitle = new QLabel(QStringLiteral("UTPublisher"), this);
+    auto *brandTitle = new QLabel(QStringLiteral("统信应用投递助手"), this);
     brandTitle->setObjectName(QStringLiteral("BrandTitle"));
     brandRow->addWidget(brandIcon);
     brandRow->addWidget(brandTitle, 1);

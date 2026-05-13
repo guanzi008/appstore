@@ -1,4 +1,4 @@
-# appstore
+# 统信应用投递助手
 
 Standalone UnionTech/deepin UOS app store publishing toolkit.
 

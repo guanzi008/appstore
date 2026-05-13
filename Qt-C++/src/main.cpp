@@ -67,10 +67,10 @@ void configureApplicationFonts(Dtk::Widget::DApplication &app)
 int main(int argc, char *argv[])
 {
     Dtk::Widget::DApplication app(argc, argv);
-    Dtk::Widget::DApplication::setApplicationName(QStringLiteral("UTPublisher"));
+    Dtk::Widget::DApplication::setApplicationName(QStringLiteral("统信应用投递助手"));
     Dtk::Widget::DApplication::setOrganizationName(QStringLiteral("UnionTech"));
-    app.setProductName(QStringLiteral("UTPublisher"));
-    app.setApplicationDescription(QStringLiteral("应用商店发布工具"));
+    app.setProductName(QStringLiteral("统信应用投递助手"));
+    app.setApplicationDescription(QStringLiteral("统信/deepin UOS 应用商店投递与更新工具"));
 
     configureApplicationFonts(app);
 

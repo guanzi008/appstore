@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(UTPublisherQtCpp LANGUAGES CXX)
+project(UnionTechAppDeliveryAssistantQtCpp LANGUAGES CXX)
 
 set(APPSTORE_APPID "com.uniontech.utpublisher" CACHE STRING "deepin/UOS store appid")
 set(APPSTORE_APP_ROOT "opt/apps/${APPSTORE_APPID}" CACHE STRING "deepin/UOS store install root")
@@ -66,7 +66,7 @@ else()
 endif()
 
 set(APPSTORE_QT_PACKAGE_PREFIX "Qt${APPSTORE_RESOLVED_QT_MAJOR}")
-message(STATUS "Building UTPublisher with Qt ${APPSTORE_RESOLVED_QT_MAJOR} and ${APPSTORE_DTK_WIDGET_MODULE}")
+message(STATUS "Building 统信应用投递助手 with Qt ${APPSTORE_RESOLVED_QT_MAJOR} and ${APPSTORE_DTK_WIDGET_MODULE}")
 
 add_executable(utpublisher-qt-cpp
     src/main.cpp

@@ -26,6 +26,6 @@ Depends:
  xvfb,
  xauth
 Description: deepin/UOS app store publishing tool
- UTPublisher is a Qt desktop tool for preparing and submitting application
- metadata, packages, screenshots, and compatibility ranges to the deepin/UOS
- application store.
+ 统信应用投递助手 is a Qt desktop tool for preparing and submitting
+ application metadata, packages, screenshots, and compatibility ranges to the
+ deepin/UOS application store.

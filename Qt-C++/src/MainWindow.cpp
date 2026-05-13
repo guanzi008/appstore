@@ -360,7 +360,7 @@ MainWindow::MainWindow(QWidget *parent)
     : Dtk::Widget::DMainWindow(parent)
     , m_bridge(new BridgeClient(QStringLiteral(APPSTORE_REPO_ROOT), this))
 {
-    setWindowTitle(QStringLiteral("UTPublisher"));
+    setWindowTitle(QStringLiteral("统信应用投递助手"));
     setAcceptDrops(true);
     resize(1480, 820);
     setMinimumSize(1180, 720);
@@ -377,7 +377,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 void MainWindow::buildUi()
 {
-    titlebar()->setTitle(QStringLiteral("UTPublisher"));
+    titlebar()->setTitle(QStringLiteral("统信应用投递助手"));
     titlebar()->setMenuVisible(false);
     titlebar()->setSeparatorVisible(false);
     titlebar()->setBackgroundTransparent(true);

@@ -15,7 +15,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Verify UTPublisher action credentials
+      - name: Verify 统信应用投递助手 action credentials
         uses: ./
         with:
           username: ${{ secrets.APPSTORE_USERNAME }}
