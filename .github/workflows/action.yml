@@ -34,7 +34,7 @@ jobs:
       - name: Install system tools used by package inspectors
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dpkg-dev file
+          sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg
 
       - name: Install Python dependencies
         run: |
@@ -43,4 +43,3 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s appstore/tests -v
-

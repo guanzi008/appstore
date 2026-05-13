@@ -21,6 +21,7 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
+ ffmpeg,
  xdotool,
  scrot,
  xvfb,

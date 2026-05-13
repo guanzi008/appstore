@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -195,66 +196,55 @@ def _is_image_file(path: Path) -> bool:
 
 
 def _prepare_icon(source: Path, target: Path) -> Path:
-    QtCore, QtGui, keep_aspect_ratio, smooth_transformation = _qt_image_api()
-    image = _load_image(source)
-    square_size = max(image.width(), image.height(), DEFAULT_ICON_SIZE)
-    canvas = QtGui.QImage(
-        square_size,
-        square_size,
-        QtGui.QImage.Format.Format_ARGB32 if hasattr(QtGui.QImage, "Format") else QtGui.QImage.Format_ARGB32,
-    )
-    canvas.fill(QtCore.Qt.GlobalColor.transparent if hasattr(QtCore.Qt, "GlobalColor") else 0)
-    painter = QtGui.QPainter(canvas)
-    x = (square_size - image.width()) // 2
-    y = (square_size - image.height()) // 2
-    painter.drawImage(x, y, image)
-    painter.end()
-    normalized = canvas.scaled(
-        DEFAULT_ICON_SIZE,
-        DEFAULT_ICON_SIZE,
-        keep_aspect_ratio,
-        smooth_transformation,
-    )
     target.parent.mkdir(parents=True, exist_ok=True)
-    if not normalized.save(str(target), "PNG"):
-        raise RuntimeError(f"failed to save icon: {target}")
+    filters = (
+        f"scale={DEFAULT_ICON_SIZE}:{DEFAULT_ICON_SIZE}:"
+        "force_original_aspect_ratio=decrease:flags=lanczos,"
+        f"pad={DEFAULT_ICON_SIZE}:{DEFAULT_ICON_SIZE}:(ow-iw)/2:(oh-ih)/2:"
+        "color=black@0,format=rgba"
+    )
+    _run_ffmpeg_image_convert(source, target, filters=filters)
     return target
 
 
 def _prepare_screenshot(source: Path, target_base: Path) -> Path:
-    image = _load_image(source)
-    image = _normalize_screenshot_image(image)
+    filters = _screenshot_normalize_filters(source)
     png_path = target_base.with_suffix(".png")
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    if not image.save(str(png_path), "PNG"):
-        raise RuntimeError(f"failed to save screenshot: {png_path}")
+    _run_ffmpeg_image_convert(source, png_path, filters=filters)
     if png_path.stat().st_size <= MAX_SCREENSHOT_BYTES:
         return png_path
 
     jpg_path = target_base.with_suffix(".jpg")
-    for quality in (92, 88, 84, 80, 76, 72, 68, 64):
-        if image.save(str(jpg_path), "JPG", quality) and jpg_path.stat().st_size <= MAX_SCREENSHOT_BYTES:
+    for quality in (2, 4, 6, 8, 10, 12, 14, 16):
+        _run_ffmpeg_image_convert(
+            source,
+            jpg_path,
+            filters=f"{filters},format=yuvj420p",
+            quality=quality,
+        )
+        if jpg_path.stat().st_size <= MAX_SCREENSHOT_BYTES:
             png_path.unlink(missing_ok=True)
             return jpg_path
     return jpg_path if jpg_path.exists() else png_path
 
 
-def _normalize_screenshot_image(image):
-    QtCore, _, _, smooth_transformation = _qt_image_api()
-    if image.width() <= 0 or image.height() <= 0:
+def _screenshot_normalize_filters(source: Path) -> str:
+    width, height = _probe_dimensions(source)
+    if width <= 0 or height <= 0:
         raise RuntimeError("invalid screenshot dimensions")
 
-    if image.height() > image.width():
+    if height > width:
         min_width, min_height, max_width, max_height = PORTRAIT_SCREENSHOT_SIZE
         ratio_width, ratio_height = 9, 16
     else:
         min_width, min_height, max_width, max_height = LANDSCAPE_SCREENSHOT_SIZE
         ratio_width, ratio_height = 3, 2
 
-    cropped = _center_crop_to_ratio(image, ratio_width, ratio_height)
+    crop_x, crop_y, crop_width, crop_height = _center_crop_to_ratio(width, height, ratio_width, ratio_height)
     target_width, target_height = _bounded_size_for_ratio(
-        cropped.width(),
-        cropped.height(),
+        crop_width,
+        crop_height,
         min_width,
         min_height,
         max_width,
@@ -262,31 +252,24 @@ def _normalize_screenshot_image(image):
         ratio_width,
         ratio_height,
     )
-    if cropped.width() == target_width and cropped.height() == target_height:
-        return cropped
-
-    ignore_aspect_ratio = (
-        QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
-        if hasattr(QtCore.Qt, "AspectRatioMode")
-        else QtCore.Qt.IgnoreAspectRatio
+    return (
+        f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
+        f"scale={target_width}:{target_height}:flags=lanczos"
     )
-    return cropped.scaled(target_width, target_height, ignore_aspect_ratio, smooth_transformation)
 
 
-def _center_crop_to_ratio(image, ratio_width: int, ratio_height: int):
-    width = image.width()
-    height = image.height()
+def _center_crop_to_ratio(width: int, height: int, ratio_width: int, ratio_height: int) -> tuple[int, int, int, int]:
     target_ratio = ratio_width / ratio_height
     current_ratio = width / height
     if current_ratio > target_ratio:
         crop_width = max(1, round(height * target_ratio))
         x = max(0, (width - crop_width) // 2)
-        return image.copy(x, 0, crop_width, height)
+        return x, 0, crop_width, height
     if current_ratio < target_ratio:
         crop_height = max(1, round(width / target_ratio))
         y = max(0, (height - crop_height) // 2)
-        return image.copy(0, y, width, crop_height)
-    return image
+        return 0, y, width, crop_height
+    return 0, 0, width, height
 
 
 def _bounded_size_for_ratio(
@@ -318,15 +301,71 @@ def _bounded_size_for_ratio(
     return target_width, target_height
 
 
-def _load_image(path: Path):
-    _, QtGui, _, _ = _qt_image_api()
-    image = QtGui.QImage(str(path))
-    if image.isNull():
-        raise RuntimeError(f"failed to load image: {path}")
-    return image
+def _probe_dimensions(path: Path) -> tuple[int, int]:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=s=x:p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffprobe not found. Install ffmpeg to preprocess assets.") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"ffprobe failed for {path.name}: {detail}") from exc
+
+    text = completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else ""
+    try:
+        width_text, height_text = text.split("x", 1)
+        width = int(width_text)
+        height = int(height_text)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"ffprobe returned invalid dimensions for {path.name}: {text!r}") from exc
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"invalid image dimensions for {path.name}: {width}x{height}")
+    return width, height
 
 
-def _qt_image_api():
-    from ui.qt_compat import KEEP_ASPECT_RATIO, QtCore, QtGui, SMOOTH_TRANSFORMATION
-
-    return QtCore, QtGui, KEEP_ASPECT_RATIO, SMOOTH_TRANSFORMATION
+def _run_ffmpeg_image_convert(
+    source: Path,
+    target: Path,
+    *,
+    filters: str,
+    quality: int | None = None,
+) -> None:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(source),
+        "-frames:v",
+        "1",
+        "-vf",
+        filters,
+    ]
+    if quality is not None:
+        command.extend(["-q:v", str(quality)])
+    command.append(str(target))
+    try:
+        subprocess.run(command, capture_output=True, text=True, check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg not found. Install ffmpeg to preprocess assets.") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"ffmpeg failed for {source.name}: {detail}") from exc
+    if not target.exists() or target.stat().st_size <= 0:
+        raise RuntimeError(f"failed to save image: {target}")

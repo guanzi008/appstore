@@ -1,13 +1,15 @@
 import json
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
 from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
 from appstore.capture_workflow import CapturePackageResult
 from appstore.session_state import BrowserSessionState, SessionStateStore
-from ui.assets import AssetBundle, _prepare_screenshot
+from ui.assets import AssetBundle, _prepare_icon, _prepare_screenshot
 from ui.backend import (
     BatchGroupSubmissionPlan,
     LoginContext,
@@ -24,7 +26,6 @@ from ui.backend import (
     submit_existing_applications_batch,
     try_restore_cached_login,
 )
-from ui.qt_compat import QtGui
 from ui.package_meta import PackageGroup, PackageMetadata
 from ui.preferences import PreferenceStore, UIPreferences
 from ui.cpp_bridge import (
@@ -84,18 +85,29 @@ class _DetailClient:
         self.session = object()
 
 
+def _solid_png_bytes(width: int, height: int, color: tuple[int, int, int]) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        checksum = zlib.crc32(kind)
+        checksum = zlib.crc32(payload, checksum)
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum & 0xFFFFFFFF)
+
+    scanline = b"\x00" + bytes(color) * width
+    raw = scanline * height
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
 class UiBackendCacheTests(unittest.TestCase):
     @staticmethod
     def _write_test_image(path: Path, width: int, height: int) -> None:
-        image_format = (
-            QtGui.QImage.Format.Format_RGB32
-            if hasattr(QtGui.QImage, "Format")
-            else QtGui.QImage.Format_RGB32
-        )
-        image = QtGui.QImage(width, height, image_format)
-        image.fill(QtGui.QColor(70, 120, 180))
-        if not image.save(str(path), "PNG"):
-            raise RuntimeError(f"failed to write test image: {path}")
+        path.write_bytes(_solid_png_bytes(width, height, (70, 120, 180)))
+
+    @staticmethod
+    def _png_size(path: Path) -> tuple[int, int]:
+        data = path.read_bytes()
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"not a PNG image: {path}")
+        return struct.unpack(">II", data[16:24])
 
     def test_prepare_screenshot_normalizes_landscape_to_store_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -104,10 +116,10 @@ class UiBackendCacheTests(unittest.TestCase):
             self._write_test_image(source, 1920, 1080)
 
             result = _prepare_screenshot(source, root / "out" / "screen")
-            image = QtGui.QImage(str(result))
+            width, height = self._png_size(result)
 
-            self.assertEqual((image.width(), image.height()), (1620, 1080))
-            self.assertEqual(image.width() * 2, image.height() * 3)
+            self.assertEqual((width, height), (1620, 1080))
+            self.assertEqual(width * 2, height * 3)
             self.assertTrue(result.exists())
 
     def test_prepare_screenshot_normalizes_portrait_to_store_ratio(self) -> None:
@@ -117,10 +129,21 @@ class UiBackendCacheTests(unittest.TestCase):
             self._write_test_image(source, 1000, 2000)
 
             result = _prepare_screenshot(source, root / "out" / "screen")
-            image = QtGui.QImage(str(result))
+            width, height = self._png_size(result)
 
-            self.assertEqual((image.width(), image.height()), (900, 1600))
-            self.assertEqual(image.width() * 16, image.height() * 9)
+            self.assertEqual((width, height), (900, 1600))
+            self.assertEqual(width * 16, height * 9)
+            self.assertTrue(result.exists())
+
+    def test_prepare_icon_normalizes_without_qt_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "icon.png"
+            self._write_test_image(source, 300, 120)
+
+            result = _prepare_icon(source, root / "out" / "icon.png")
+
+            self.assertEqual(self._png_size(result), (512, 512))
             self.assertTrue(result.exists())
 
     def test_login_with_credentials_saves_session_cache(self) -> None:

@@ -99,7 +99,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends dpkg-dev file
+        sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg
 
     - name: Install 统信应用投递助手 Python dependencies
       shell: bash
