@@ -5,10 +5,10 @@ import hashlib
 from datetime import datetime
 
 import requests
-from pyppeteer import launch
 
 from appstore.models import AppRecord, DebPackageInfo, ReleaseRecord, UploadedFileRef
 from appstore.platforms import resolve_store_arch, resolve_store_platform
+from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from appstore.update_payload import (
     baseline_id_objects,
     baseline_system_id_objects,
@@ -24,12 +24,6 @@ BASE = f"{ORIGIN}/devprod-api"
 REQUEST_TIMEOUT = 120
 UPLOAD_PUT_TIMEOUT = 900
 UPLOAD_PUT_ATTEMPTS = 3
-PYPPETEER_LAUNCH_OPTIONS = {
-    "args": ["--no-sandbox"],
-    "handleSIGINT": False,
-    "handleSIGTERM": False,
-    "handleSIGHUP": False,
-}
 
 
 class AppLookupAmbiguousError(RuntimeError):

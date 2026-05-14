@@ -225,7 +225,22 @@
 
 **扫码登录时下载 Chromium 很慢**
 
-扫码登录依赖浏览器运行时。如果自动下载慢，可以手动下载 Playwright Chromium，并配置到对应缓存目录，或改用账号密码登录。
+扫码登录依赖 Chromium 浏览器运行时。工具会按运行地区自动选择下载源：国内环境优先使用华为云镜像，其次回退到其他国内镜像和官方源。
+
+如需手动指定下载源，可在启动前设置环境变量：
+
+```bash
+export UTPUBLISHER_CHROMIUM_REGION=cn
+export UTPUBLISHER_CHROMIUM_MIRROR=huaweicloud
+```
+
+也可以直接指定 Pyppeteer 下载源：
+
+```bash
+export PYPPETEER_DOWNLOAD_HOST=https://repo.huaweicloud.com
+```
+
+可选镜像名称包括 `huaweicloud`、`huaweicloud-mirror`、`npmmirror`、`official`。
 
 **拖入包后自动匹配错应用**
 

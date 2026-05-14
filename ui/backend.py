@@ -18,7 +18,7 @@ from appstore.session_state import BrowserSessionState, SessionStateStore
 from appstore.submission import submit_grouped_release, validate_release_group
 from appstore.translation import TranslationConfig, desired_languages_for_regions, translate_listing_texts
 from appstore.upload_batch import _write_reports
-from pyppeteer import launch
+from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from ui.assets import AssetBundle, preprocess_assets
 from ui.package_meta import PackageGroup
 
@@ -41,12 +41,6 @@ DEFAULT_AI_API_KEY = os.environ.get("APPSTORE_AI_API_KEY", "")
 DEFAULT_SUDO_PASSWORD = os.environ.get("APPSTORE_SUDO_PASSWORD", "")
 DEFAULT_OCR_PYTHON = os.environ.get("APPSTORE_OCR_PYTHON", "")
 DEFAULT_SESSION_CACHE_MAX_AGE_SECONDS = int(os.environ.get("APPSTORE_SESSION_CACHE_MAX_AGE_SECONDS", str(7 * 24 * 3600)))
-PYPPETEER_LAUNCH_OPTIONS = {
-    "args": ["--no-sandbox"],
-    "handleSIGINT": False,
-    "handleSIGTERM": False,
-    "handleSIGHUP": False,
-}
 
 
 @dataclass(frozen=True)

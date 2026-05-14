@@ -8,10 +8,10 @@ from collections.abc import Callable
 from urllib.parse import urljoin
 
 import requests
-from pyppeteer import launch
 
-from appstore.appstore_client import AppStoreClient, PYPPETEER_LAUNCH_OPTIONS, build_requests_session
+from appstore.appstore_client import AppStoreClient, build_requests_session
 from appstore.browser_runtime import capture_browser_session_state
+from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from appstore.session_state import BrowserSessionState
 
 

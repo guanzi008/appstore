@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from pyppeteer import launch
-
 from appstore.browser_flow import (
     click_button,
     click_system_dialog_primary,
@@ -27,17 +25,12 @@ from appstore.browser_runtime import (
     wait_for_logged_in_portal_state,
 )
 from appstore.platform_policy import resolve_target_system_line
+from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from appstore.session_state import SessionStateStore
 
 
 ORIGIN = "https://appstore-dev.uniontech.com"
 INDEX_URL = f"{ORIGIN}/#/index"
-PYPPETEER_LAUNCH_OPTIONS = {
-    "args": ["--no-sandbox"],
-    "handleSIGINT": False,
-    "handleSIGTERM": False,
-    "handleSIGHUP": False,
-}
 
 
 @dataclass(frozen=True)
