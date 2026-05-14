@@ -667,7 +667,7 @@ class UiBackendCaptureTests(unittest.TestCase):
 
 
 class UiBackendBatchSubmitTests(unittest.TestCase):
-    def test_build_target_options_defaults_to_latest_baseline(self) -> None:
+    def test_build_target_options_for_new_app_start_unselected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             package_path = Path(temp_dir) / "demo_1.0.0_amd64.deb"
             package_path.write_bytes(b"deb")
@@ -689,7 +689,10 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
             options = build_target_options(cache, package_group=package_group)
 
             self.assertEqual(len(options), 1)
-            self.assertEqual(options[0].selected_baseline_ids, ("2301",))
+            self.assertFalse(options[0].selected)
+            self.assertEqual(options[0].baseline_id, "")
+            self.assertEqual(options[0].selected_baseline_ids, ())
+            self.assertEqual(options[0].unsupported_baseline_ids, ())
 
     def test_submit_applications_batch_supports_mixed_update_and_new(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

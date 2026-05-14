@@ -1,4 +1,7 @@
+import asyncio
+import os
 import unittest
+from unittest.mock import patch
 
 from appstore.chromium_mirrors import (
     OFFICIAL_CHROMIUM_DOWNLOAD_HOST,
@@ -7,6 +10,7 @@ from appstore.chromium_mirrors import (
     preferred_chromium_hosts,
     rewrite_chromium_download_url,
 )
+from appstore import pyppeteer_runtime
 
 
 class ChromiumMirrorTests(unittest.TestCase):
@@ -61,3 +65,30 @@ class ChromiumMirrorTests(unittest.TestCase):
             rewritten,
             "https://repo.huaweicloud.com/chromium-browser-snapshots/Linux_x64/1181205/chrome-linux.zip",
         )
+
+    def test_explicit_browser_executable_is_supported(self) -> None:
+        with patch.dict(os.environ, {"UTPUBLISHER_CHROMIUM_EXECUTABLE": "/usr/bin/chromium"}, clear=False):
+            self.assertEqual(pyppeteer_runtime._browser_executable_path(), "/usr/bin/chromium")
+
+    def test_loongarch64_uses_system_browser_when_available(self) -> None:
+        def fake_which(command: str) -> str | None:
+            return "/usr/bin/chromium" if command == "chromium" else None
+
+        with patch.object(pyppeteer_runtime.platform, "machine", return_value="loongarch64"):
+            with patch.object(pyppeteer_runtime.shutil, "which", side_effect=fake_which):
+                with patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(pyppeteer_runtime._browser_executable_path(), "/usr/bin/chromium")
+
+    def test_launch_merges_executable_path_at_call_time(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def fake_launch(options: dict[str, object]):
+            captured.update(options)
+            return object()
+
+        with patch.dict(os.environ, {"UTPUBLISHER_CHROMIUM_EXECUTABLE": "/opt/chromium"}, clear=False):
+            with patch.object(pyppeteer_runtime, "_pyppeteer_launch", side_effect=fake_launch):
+                asyncio.run(pyppeteer_runtime.launch(headless=True))
+
+        self.assertEqual(captured["executablePath"], "/opt/chromium")
+        self.assertTrue(captured["headless"])

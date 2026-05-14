@@ -242,6 +242,12 @@ export PYPPETEER_DOWNLOAD_HOST=https://repo.huaweicloud.com
 
 可选镜像名称包括 `huaweicloud`、`huaweicloud-mirror`、`npmmirror`、`official`。
 
+Pyppeteer 官方快照不提供 loong64/loongarch64 版本。loong64 系统需要安装本机 Chromium/Chrome，并在启动前指定浏览器路径：
+
+```bash
+export UTPUBLISHER_CHROMIUM_EXECUTABLE=/usr/bin/chromium
+```
+
 **拖入包后自动匹配错应用**
 
 先点击左侧“我的应用”，回到空状态；再手动点击正确的线上应用，之后拖入本地包。

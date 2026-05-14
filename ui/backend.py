@@ -357,17 +357,10 @@ def build_target_options(
     ]
     result: list[SystemTargetOption] = []
     for package in package_group.packages:
-        selected_codes = {template.sup_sys_code for template in templates}
-        if package.pkg_arch.lower() in {"loong64", "loongarch64"}:
-            selected_codes = {code for code in selected_codes if code != "11"} | {
-                code for code in selected_codes if code == "21"
-            }
         for template in templates:
             baseline_options = tuple(
                 (option.baseline_id, option.minor_version) for option in template.baseline_options
             )
-            selected_baseline_ids = _default_selected_baseline_ids(baseline_options)
-            baseline_id = selected_baseline_ids[0] if selected_baseline_ids else ""
             result.append(
                 SystemTargetOption(
                     package_path=str(package.path),
@@ -377,20 +370,13 @@ def build_target_options(
                     label=template.system_label,
                     package_family=template.package_family,
                     baseline_options=baseline_options,
-                    selected=template.sup_sys_code in selected_codes,
-                    baseline_id=baseline_id,
-                    selected_baseline_ids=selected_baseline_ids,
+                    selected=False,
+                    baseline_id="",
+                    selected_baseline_ids=(),
                     unsupported_baseline_ids=(),
                 )
             )
     return tuple(result)
-
-
-def _default_selected_baseline_ids(baseline_options: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
-    if not baseline_options:
-        return ()
-    baseline_id = baseline_options[-1][0]
-    return (baseline_id,) if baseline_id else ()
 
 
 def package_group_store_arch_codes(package_group: PackageGroup) -> tuple[str, ...]:
