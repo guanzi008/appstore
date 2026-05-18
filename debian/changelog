@@ -1,3 +1,13 @@
+com.uniontech.utpublisher (0.1.1) unstable; urgency=medium
+
+  * Rename the desktop product name to 应用投递助手.
+  * Keep new app target selections empty by default.
+  * Add domestic Chromium download mirrors.
+  * Preserve screenshots during preprocessing and fix asset handling without Qt bindings.
+  * Refine desktop workflow state handling and package update behavior.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Mon, 18 May 2026 12:00:37 +0800
+
 com.uniontech.utpublisher (0.1.0) unstable; urgency=medium
 
   * Initial deepin/UOS store layout package.
