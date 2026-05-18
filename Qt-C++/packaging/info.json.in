@@ -1,6 +1,6 @@
 {
   "appid": "@APPSTORE_APPID@",
-  "name": "统信应用投递助手",
+  "name": "应用投递助手",
   "version": "@APPSTORE_INFO_VERSION@",
   "arch": "@APPSTORE_INFO_ARCH@",
   "permissions": {}

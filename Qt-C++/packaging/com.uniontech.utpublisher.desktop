@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=统信应用投递助手
-Name[zh_CN]=统信应用投递助手
+Name=应用投递助手
+Name[zh_CN]=应用投递助手
 Comment=deepin/UOS app store publishing tool
 Comment[zh_CN]=统信/deepin UOS 应用商店投递与更新工具
 Exec=/opt/apps/com.uniontech.utpublisher/files/bin/utpublisher-qt-cpp

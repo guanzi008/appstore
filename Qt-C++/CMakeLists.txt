@@ -66,7 +66,7 @@ else()
 endif()
 
 set(APPSTORE_QT_PACKAGE_PREFIX "Qt${APPSTORE_RESOLVED_QT_MAJOR}")
-message(STATUS "Building 统信应用投递助手 with Qt ${APPSTORE_RESOLVED_QT_MAJOR} and ${APPSTORE_DTK_WIDGET_MODULE}")
+message(STATUS "Building 应用投递助手 with Qt ${APPSTORE_RESOLVED_QT_MAJOR} and ${APPSTORE_DTK_WIDGET_MODULE}")
 
 add_executable(utpublisher-qt-cpp
     src/main.cpp

@@ -11,7 +11,7 @@
 LoginDialog::LoginDialog(QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("登录统信应用投递助手"));
+    setWindowTitle(QStringLiteral("登录应用投递助手"));
     setModal(true);
     buildUi();
 }

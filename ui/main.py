@@ -231,7 +231,7 @@ def _accepts_log_callback(fn: Callable[..., Any]) -> bool:
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("统信应用投递助手")
+        self.setWindowTitle("应用投递助手")
         self.resize(1400, 960)
 
         self.preference_store = PreferenceStore()

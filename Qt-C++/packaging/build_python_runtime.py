@@ -172,7 +172,7 @@ def build_runtime(
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Build the embedded runtime for 统信应用投递助手.")
+    parser = argparse.ArgumentParser(description="Build the embedded runtime for 应用投递助手.")
     parser.add_argument("runtime_dir")
     parser.add_argument("--install-deps", action="store_true")
     parser.add_argument("--requirements", action="append", default=[])
