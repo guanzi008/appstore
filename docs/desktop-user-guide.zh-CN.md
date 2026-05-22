@@ -244,10 +244,24 @@ export PYPPETEER_DOWNLOAD_HOST=https://repo.huaweicloud.com
 
 Pyppeteer 官方快照不提供 loong64/loongarch64 版本。loong64 系统需要安装本机 Chromium/Chrome，并在启动前指定浏览器路径：
 
+可以手动下载 Playwright Chromium，并配置到对应缓存目录(amd架构例子)
 ```bash
 export UTPUBLISHER_CHROMIUM_EXECUTABLE=/usr/bin/chromium
 ```
+```bash
+mkdir -p ~/.local/share/pyppeteer/local-chromium/1181205
 
+curl -L \
+  -o /tmp/chrome-linux-1181205.zip \
+  https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/1181205/chrome-linux.zip
+
+unzip -q /tmp/chrome-linux-1181205.zip \
+  -d ~/.local/share/pyppeteer/local-chromium/1181205
+
+chmod +x ~/.local/share/pyppeteer/local-chromium/1181205/chrome-linux/chrome
+
+~/.local/share/pyppeteer/local-chromium/1181205/chrome-linux/chrome --version
+```
 **拖入包后自动匹配错应用**
 
 先点击左侧“我的应用”，回到空状态；再手动点击正确的线上应用，之后拖入本地包。

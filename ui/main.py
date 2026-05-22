@@ -1129,6 +1129,9 @@ class MainWindow(QtWidgets.QMainWindow):
             last_session_account=(
                 session_account if session_account is not None else self.preferences.last_session_account
             ),
+            remember_credentials=self.preferences.remember_credentials,
+            remembered_username=self.preferences.remembered_username,
+            remembered_password=self.preferences.remembered_password,
         )
         self.preference_store.save(self.preferences)
         current_category = category_id or self._combo_text(self.category_combo) or "1"

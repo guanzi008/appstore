@@ -634,7 +634,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
             m_workflowBar->setStepStates(StepState::Done, StepState::Idle, StepState::Idle, StepState::Idle);
             m_workflowBar->setStatusText(
                 autoMatched
-                    ? QStringLiteral("解析完成，已按包名匹配我的应用，并同步线上资料、素材与适配项。")
+                    ? QStringLiteral("解析完成，已按包名和包类型匹配我的应用，并同步线上资料、素材与适配项。")
                     : QStringLiteral("解析完成，已载入当前应用。"));
             if (m_autoPilotCheck->isChecked()) {
                 preprocessAssets();
@@ -729,6 +729,11 @@ void MainWindow::handleBridgeFailed(const QString &command, const QString &messa
 
 void MainWindow::applySessionData(const QJsonObject &data)
 {
+    const QJsonObject preferences = data.value(QStringLiteral("preferences")).toObject();
+    if (!preferences.isEmpty()) {
+        m_preferences = preferences;
+    }
+
     const QJsonObject login = data.value(QStringLiteral("login")).toObject();
     const bool loggedIn = login.value(QStringLiteral("logged_in")).toBool(false);
     const QString accountLabel = login.value(QStringLiteral("account_label")).toString();
@@ -737,6 +742,10 @@ void MainWindow::applySessionData(const QJsonObject &data)
         m_preferredAccount = sessionAccount;
     } else if (!accountLabel.isEmpty()) {
         m_preferredAccount = accountLabel;
+    } else if (m_preferredAccount.isEmpty() && !m_preferences.isEmpty()) {
+        const QString rememberedAccount = m_preferences.value(QStringLiteral("remembered_username")).toString().trimmed();
+        const QString lastSessionAccount = m_preferences.value(QStringLiteral("last_session_account")).toString().trimmed();
+        m_preferredAccount = rememberedAccount.isEmpty() ? lastSessionAccount : rememberedAccount;
     }
     m_sidebar->setLoginState(loggedIn, accountLabel);
 
@@ -1053,6 +1062,13 @@ void MainWindow::loadMoreMyApps()
 void MainWindow::loginByWechat()
 {
     LoginDialog dialog(this);
+    const bool rememberCredentials = m_preferences.value(QStringLiteral("remember_credentials")).toBool(false);
+    const QString rememberedUsername = m_preferences.value(QStringLiteral("remembered_username")).toString().trimmed();
+    const QString lastSessionAccount = m_preferences.value(QStringLiteral("last_session_account")).toString().trimmed();
+    dialog.setRememberedCredentials(
+        rememberedUsername.isEmpty() ? lastSessionAccount : rememberedUsername,
+        m_preferences.value(QStringLiteral("remembered_password")).toString(),
+        rememberCredentials);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -1061,6 +1077,7 @@ void MainWindow::loginByWechat()
     if (dialog.mode() == LoginDialog::Mode::Credentials) {
         payload.insert(QStringLiteral("username"), dialog.username());
         payload.insert(QStringLiteral("password"), dialog.password());
+        payload.insert(QStringLiteral("remember_credentials"), dialog.rememberCredentials());
         runBridgeCommand(QStringLiteral("login_credentials"), payload, 600000);
         return;
     }

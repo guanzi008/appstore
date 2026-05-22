@@ -26,6 +26,9 @@ class UIPreferences:
     last_release_key: str = "stable"
     last_pkg_channel: str = "stable"
     last_session_account: str = ""
+    remember_credentials: bool = False
+    remembered_username: str = ""
+    remembered_password: str = ""
 
 
 class PreferenceStore:
@@ -49,6 +52,9 @@ class PreferenceStore:
             last_release_key=str(payload.get("last_release_key", "") or "stable"),
             last_pkg_channel=str(payload.get("last_pkg_channel", "") or "stable"),
             last_session_account=str(payload.get("last_session_account", "") or ""),
+            remember_credentials=_normalize_bool(payload.get("remember_credentials", False)),
+            remembered_username=str(payload.get("remembered_username", "") or ""),
+            remembered_password=str(payload.get("remembered_password", "") or ""),
         )
 
     def save(self, preferences: UIPreferences) -> Path:
@@ -78,3 +84,11 @@ def _normalize_items(raw, *, default: tuple[str, ...]) -> tuple[str, ...]:
         if str(item).strip()
     )
     return normalized or default
+
+
+def _normalize_bool(raw) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}

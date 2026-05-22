@@ -1,5 +1,6 @@
 #include "ui/LoginDialog.h"
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QGridLayout>
 #include <QLabel>
@@ -16,6 +17,18 @@ LoginDialog::LoginDialog(QWidget *parent)
     buildUi();
 }
 
+void LoginDialog::setRememberedCredentials(const QString &username, const QString &password, bool rememberCredentials)
+{
+    m_usernameEdit->setText(username.trimmed());
+    m_passwordEdit->setText(rememberCredentials ? password : QString());
+    m_rememberCredentialsCheck->setChecked(rememberCredentials);
+    if (m_usernameEdit->text().isEmpty()) {
+        m_usernameEdit->setFocus();
+    } else {
+        m_passwordEdit->setFocus();
+    }
+}
+
 LoginDialog::Mode LoginDialog::mode() const
 {
     return m_mode;
@@ -29,6 +42,11 @@ QString LoginDialog::username() const
 QString LoginDialog::password() const
 {
     return m_passwordEdit->text();
+}
+
+bool LoginDialog::rememberCredentials() const
+{
+    return m_rememberCredentialsCheck->isChecked();
 }
 
 void LoginDialog::buildUi()
@@ -53,10 +71,13 @@ void LoginDialog::buildUi()
     m_passwordEdit = new QLineEdit(this);
     m_passwordEdit->setPlaceholderText(QStringLiteral("请输入密码"));
     m_passwordEdit->setEchoMode(QLineEdit::Password);
+    m_rememberCredentialsCheck = new QCheckBox(QStringLiteral("记住账号密码（保存在本机）"), this);
+    m_rememberCredentialsCheck->setObjectName(QStringLiteral("RememberCredentialsCheck"));
     form->addWidget(usernameLabel, 0, 0);
     form->addWidget(m_usernameEdit, 0, 1);
     form->addWidget(passwordLabel, 1, 0);
     form->addWidget(m_passwordEdit, 1, 1);
+    form->addWidget(m_rememberCredentialsCheck, 2, 1);
     layout->addLayout(form);
 
     auto *hint = new QLabel(QStringLiteral("也可以使用扫码登录，扫码完成后会复用后端保存的 Cookie 会话。"), this);

@@ -3,6 +3,7 @@
 #include <QDialog>
 
 class QLineEdit;
+class QCheckBox;
 
 class LoginDialog final : public QDialog
 {
@@ -17,9 +18,12 @@ public:
 
     explicit LoginDialog(QWidget *parent = nullptr);
 
+    void setRememberedCredentials(const QString &username, const QString &password, bool rememberCredentials);
+
     [[nodiscard]] Mode mode() const;
     [[nodiscard]] QString username() const;
     [[nodiscard]] QString password() const;
+    [[nodiscard]] bool rememberCredentials() const;
 
 private:
     void buildUi();
@@ -27,4 +31,5 @@ private:
     Mode m_mode = Mode::Credentials;
     QLineEdit *m_usernameEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
+    QCheckBox *m_rememberCredentialsCheck = nullptr;
 };

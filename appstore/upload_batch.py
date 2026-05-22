@@ -18,6 +18,8 @@ from appstore.appstore_client import (
     REQUEST_TIMEOUT,
     build_submit_payload,
     choose_target_app_id,
+    package_family_from_app_detail,
+    package_family_from_store_row,
 )
 from appstore.browser_submission import BrowserSubmissionRunner
 from appstore.capabilities import load_capability_cache, sync_capabilities_to_cache
@@ -264,12 +266,20 @@ def _resolve_submitted_app_id(
     app: AppRecord,
     response: dict | None,
     target_app_id: str,
+    package_family: str = "",
 ) -> str:
     resolved_app_id = _extract_response_app_id(response) or target_app_id
     if resolved_app_id:
         return resolved_app_id
     try:
-        return choose_target_app_id(client.find_apps_by_pkg_name(app.pkg_name), "")
+        return choose_target_app_id(
+            _filter_app_matches_by_package_family(
+                client,
+                client.find_apps_by_pkg_name(app.pkg_name),
+                package_family=package_family,
+            ),
+            "",
+        )
     except Exception:
         return ""
 
@@ -279,6 +289,8 @@ def _resolve_target_app_id(
     app: AppRecord,
     app_id_cache: dict[str, str],
     app_entry_cache: dict[str, dict] | None = None,
+    *,
+    package_family: str = "",
 ) -> str:
     cached_app_id = app_id_cache.get(app.app_key, "")
     if cached_app_id:
@@ -287,7 +299,11 @@ def _resolve_target_app_id(
         app_id_cache[app.app_key] = app.app_id_override
         return app.app_id_override
 
-    matches = client.find_apps_by_pkg_name(app.pkg_name)
+    matches = _filter_app_matches_by_package_family(
+        client,
+        client.find_apps_by_pkg_name(app.pkg_name),
+        package_family=package_family,
+    )
     target_app_id = choose_target_app_id(matches, app.app_id_override)
     if target_app_id:
         app_id_cache[app.app_key] = target_app_id
@@ -297,6 +313,38 @@ def _resolve_target_app_id(
                     app_entry_cache[app.app_key] = match
                     break
     return target_app_id
+
+
+def _filter_app_matches_by_package_family(client, matches: list[dict], *, package_family: str) -> list[dict]:
+    requested_family = package_family.strip()
+    if requested_family not in {"deb", "linglong"}:
+        return matches
+
+    filtered: list[dict] = []
+    unknown: list[dict] = []
+    for match in matches:
+        row_family = package_family_from_store_row(match)
+        if row_family:
+            if row_family == requested_family:
+                filtered.append(match)
+            continue
+
+        detail_id = str(match.get("id", "")).strip()
+        if not detail_id or not hasattr(client, "get_app_detail"):
+            unknown.append(match)
+            continue
+        try:
+            detail = client.get_app_detail(detail_id)
+        except Exception:
+            unknown.append(match)
+            continue
+        detail_family = package_family_from_app_detail(detail)
+        if detail_family == requested_family:
+            filtered.append(match)
+        elif not detail_family:
+            unknown.append(match)
+
+    return filtered or unknown
 
 
 def _resolve_target_app_entry(
@@ -1213,7 +1261,13 @@ def _run_direct_upload_packages(
     app_detail_cache: dict[str, dict] = {}
 
     try:
-        target_app_id = _resolve_target_app_id(client, app_stub, app_id_cache, app_entry_cache)
+        target_app_id = _resolve_target_app_id(
+            client,
+            app_stub,
+            app_id_cache,
+            app_entry_cache,
+            package_family=packages[0].package_family if packages else "",
+        )
         if not target_app_id:
             raise RuntimeError(f"existing app not found for package name: {pkg_name}")
         existing_app_detail = _load_existing_app_detail(
@@ -1427,7 +1481,13 @@ def _run_upload(args) -> int:
                 release=release,
                 capability_cache=capability_cache,
             )
-            target_app_id = _resolve_target_app_id(client, app, app_id_cache, app_entry_cache)
+            target_app_id = _resolve_target_app_id(
+                client,
+                app,
+                app_id_cache,
+                app_entry_cache,
+                package_family=validated_release.package_family,
+            )
             mode = decide_execution_mode(release=release, cli_mode=args.mode)
             if mode == "auto":
                 mode = "api"
@@ -1469,6 +1529,7 @@ def _run_upload(args) -> int:
                     app=app,
                     response=response,
                     target_app_id=target_app_id,
+                    package_family=validated_release.package_family,
                 )
             if resolved_app_id:
                 app_id_cache[app.app_key] = resolved_app_id
@@ -2017,7 +2078,13 @@ def run_batch(
             )
             if package_info.pkg_name != app.pkg_name:
                 raise RuntimeError(f"package name mismatch: expected {app.pkg_name}, got {package_info.pkg_name}")
-            target_app_id = _resolve_target_app_id(client, app, app_id_cache, app_entry_cache)
+            target_app_id = _resolve_target_app_id(
+                client,
+                app,
+                app_id_cache,
+                app_entry_cache,
+                package_family=package_record.package_family,
+            )
             existing_app_detail = _load_existing_app_detail(
                 client,
                 app,

@@ -42,6 +42,143 @@ class AppStoreProtocolError(RuntimeError):
     pass
 
 
+def package_family_from_install_mode(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        numeric = str(int(float(text)))
+    except (TypeError, ValueError):
+        numeric = text.lower()
+    if numeric == "2":
+        return "linglong"
+    if numeric == "1":
+        return "deb"
+    return ""
+
+
+def _package_family_from_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {"linglong", "玲珑", "uab", "layer"} or "玲珑" in text or "linglong" in text:
+        return "linglong"
+    if text == "22":
+        return "linglong"
+    if text in {"deb", "debian", "11"} or "deb" in text:
+        return "deb"
+    return ""
+
+
+def _package_format_from_text(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {"deb", "uab", "layer"}:
+        return text
+    if text == "11" or "deb" in text:
+        return "deb"
+    if "layer" in text:
+        return "layer"
+    if text == "22" or "uab" in text or "玲珑" in text or "linglong" in text:
+        return "uab"
+    return ""
+
+
+def package_family_from_store_row(row: dict) -> str:
+    for key in ("package_family", "pkg_family", "family", "packageFamily"):
+        family = _package_family_from_text(row.get(key))
+        if family:
+            return family
+    for key in (
+        "pkgInstallMode",
+        "pkg_install_mode",
+        "package_install_mode",
+        "packageInstallMode",
+        "install_mode",
+    ):
+        family = package_family_from_install_mode(row.get(key))
+        if family:
+            return family
+    for key in (
+        "pkgType",
+        "pkg_type",
+        "package_type",
+        "package_format",
+        "pkg_format",
+        "format",
+        "type",
+    ):
+        family = _package_family_from_text(row.get(key))
+        if family:
+            return family
+    return ""
+
+
+def package_format_from_store_row(row: dict, package_family: str = "") -> str:
+    for key in ("package_format", "pkg_format", "format", "pkgType", "pkg_type", "package_type", "type"):
+        package_format = _package_format_from_text(row.get(key))
+        if package_format:
+            return package_format
+    family = (package_family or package_family_from_store_row(row)).strip()
+    if family == "deb":
+        return "deb"
+    if family == "linglong":
+        return "uab"
+    return ""
+
+
+def _detail_data(detail: dict) -> dict:
+    datas = detail.get("datas") if isinstance(detail, dict) else None
+    return datas if isinstance(datas, dict) else detail
+
+
+def package_family_from_app_detail(detail: dict) -> str:
+    data = _detail_data(detail)
+    basic_info = data.get("app_basic_info") if isinstance(data, dict) else {}
+    if isinstance(basic_info, dict):
+        family = package_family_from_install_mode(basic_info.get("pkgInstallMode"))
+        if family:
+            return family
+        for key in ("package_family", "pkg_family", "pkgType", "pkg_type", "package_type"):
+            family = _package_family_from_text(basic_info.get(key))
+            if family:
+                return family
+    origin_pkgs = data.get("app_origin_pkgs") if isinstance(data, dict) else []
+    for origin_pkg in origin_pkgs if isinstance(origin_pkgs, list) else []:
+        if not isinstance(origin_pkg, dict):
+            continue
+        for key in ("pkgType", "pkg_type", "package_type", "package_format", "pkg_format"):
+            family = _package_family_from_text(origin_pkg.get(key))
+            if family:
+                return family
+    return ""
+
+
+def package_format_from_app_detail(detail: dict, package_family: str = "") -> str:
+    data = _detail_data(detail)
+    basic_info = data.get("app_basic_info") if isinstance(data, dict) else {}
+    if isinstance(basic_info, dict):
+        for key in ("package_format", "pkg_format", "format", "pkgType", "pkg_type", "package_type"):
+            package_format = _package_format_from_text(basic_info.get(key))
+            if package_format:
+                return package_format
+    origin_pkgs = data.get("app_origin_pkgs") if isinstance(data, dict) else []
+    for origin_pkg in origin_pkgs if isinstance(origin_pkgs, list) else []:
+        if not isinstance(origin_pkg, dict):
+            continue
+        for key in ("package_format", "pkg_format", "format", "pkgType", "pkg_type", "package_type"):
+            package_format = _package_format_from_text(origin_pkg.get(key))
+            if package_format:
+                return package_format
+    family = (package_family or package_family_from_app_detail(detail)).strip()
+    if family == "deb":
+        return "deb"
+    if family == "linglong":
+        return "uab"
+    return ""
+
+
 def choose_target_app_id(matches: list[dict], override: str) -> str:
     if override:
         return override

@@ -35,6 +35,7 @@ from ui.cpp_bridge import (
     _group_to_json,
     _online_group_from_detail,
     _sync_existing_detail_assets,
+    command_login_credentials,
 )
 
 
@@ -241,6 +242,90 @@ class UiPreferencesTests(unittest.TestCase):
             loaded = store.load()
             self.assertEqual(loaded.last_session_account, "manual-login")
 
+    def test_round_trips_remembered_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = PreferenceStore(Path(temp_dir) / "preferences.json")
+            store.save(
+                UIPreferences(
+                    last_session_account="odatacc",
+                    remember_credentials=True,
+                    remembered_username="odatacc",
+                    remembered_password="secret",
+                )
+            )
+            loaded = store.load()
+            self.assertTrue(loaded.remember_credentials)
+            self.assertEqual(loaded.remembered_username, "odatacc")
+            self.assertEqual(loaded.remembered_password, "secret")
+
+    def test_login_credentials_persists_remember_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = PreferenceStore(Path(temp_dir) / "preferences.json")
+            login = LoginContext(
+                client=_CachedClient(),
+                account_label="odatacc",
+                session_state_path=None,
+                login_mode="credentials",
+                can_use_browser_mode=True,
+            )
+            with (
+                patch("ui.cpp_bridge.PreferenceStore", return_value=store),
+                patch("ui.cpp_bridge.login_with_credentials", return_value=login),
+                patch("ui.cpp_bridge._load_capabilities", return_value=None),
+                patch("ui.cpp_bridge._load_categories", return_value=[]),
+            ):
+                result = command_login_credentials(
+                    {
+                        "username": "odatacc",
+                        "password": "secret",
+                        "remember_credentials": True,
+                    }
+                )
+
+            preferences = store.load()
+            self.assertTrue(result["preferences"]["remember_credentials"])
+            self.assertEqual(preferences.last_session_account, "odatacc")
+            self.assertEqual(preferences.remembered_username, "odatacc")
+            self.assertEqual(preferences.remembered_password, "secret")
+
+    def test_login_credentials_clears_saved_password_when_not_remembered(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = PreferenceStore(Path(temp_dir) / "preferences.json")
+            store.save(
+                UIPreferences(
+                    last_session_account="odatacc",
+                    remember_credentials=True,
+                    remembered_username="odatacc",
+                    remembered_password="old",
+                )
+            )
+            login = LoginContext(
+                client=_CachedClient(),
+                account_label="odatacc",
+                session_state_path=None,
+                login_mode="credentials",
+                can_use_browser_mode=True,
+            )
+            with (
+                patch("ui.cpp_bridge.PreferenceStore", return_value=store),
+                patch("ui.cpp_bridge.login_with_credentials", return_value=login),
+                patch("ui.cpp_bridge._load_capabilities", return_value=None),
+                patch("ui.cpp_bridge._load_categories", return_value=[]),
+            ):
+                command_login_credentials(
+                    {
+                        "username": "odatacc",
+                        "password": "new",
+                        "remember_credentials": False,
+                    }
+                )
+
+            preferences = store.load()
+            self.assertFalse(preferences.remember_credentials)
+            self.assertEqual(preferences.last_session_account, "odatacc")
+            self.assertEqual(preferences.remembered_username, "")
+            self.assertEqual(preferences.remembered_password, "")
+
 
 class UiCppBridgeOnlineDetailTests(unittest.TestCase):
     def test_local_package_auto_match_loads_online_assets_and_targets(self) -> None:
@@ -365,6 +450,76 @@ class UiCppBridgeOnlineDetailTests(unittest.TestCase):
                 payload_group = _group_payload_to_package_group(group)
             self.assertEqual(len(payload_group.packages), 2)
             self.assertEqual([package.pkg_arch for package in payload_group.packages], ["amd64", "arm64"])
+
+    def test_local_package_auto_match_filters_same_name_by_package_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            package_path = temp_root / "demo_1.0.0_amd64.deb"
+            package_path.write_bytes(b"deb")
+            package_group = _make_package_group(package_path, pkg_name="same-name", pkg_version="1.0.0")
+            deb_match = StoreAppMatch(
+                app_id="deb-app",
+                detail_id="detail-deb",
+                pkg_name="same-name",
+                app_name="Same Name DEB",
+            )
+            linglong_match = StoreAppMatch(
+                app_id="linglong-app",
+                detail_id="detail-linglong",
+                pkg_name="same-name",
+                app_name="Same Name Linglong",
+            )
+            details = {
+                "detail-deb": {
+                    "datas": {
+                        "app_basic_info": {"pkgInstallMode": 1},
+                        "app_fit_info": {},
+                        "app_origin_pkgs": [],
+                    }
+                },
+                "detail-linglong": {
+                    "datas": {
+                        "app_basic_info": {"pkgInstallMode": 2},
+                        "app_fit_info": {},
+                        "app_origin_pkgs": [],
+                    }
+                },
+            }
+            login = LoginContext(
+                client=_DetailClient(),
+                account_label="odatacc",
+                session_state_path=None,
+                login_mode="cached",
+                can_use_browser_mode=True,
+            )
+
+            with (
+                patch("ui.cpp_bridge.detect_asset_candidates", return_value=(None, ())),
+                patch("ui.cpp_bridge._extract_initial_icon", return_value=None),
+                patch("ui.cpp_bridge._extract_package_icon", return_value=None),
+                patch("ui.cpp_bridge.find_existing_apps", return_value=(linglong_match, deb_match)),
+                patch("ui.cpp_bridge.fetch_existing_app_detail", side_effect=lambda _client, match: details[match.detail_id]),
+                patch(
+                    "ui.cpp_bridge.build_existing_detail_editor_defaults",
+                    side_effect=lambda _detail, fallback_name: {
+                        "app_name_zh": fallback_name,
+                        "category_id": "1",
+                        "region_codes": ["1"],
+                    },
+                ),
+                patch("ui.cpp_bridge._sync_existing_detail_assets", return_value={"asset_warnings": []}),
+            ):
+                group = _group_to_json(
+                    package_group,
+                    login_context=login,
+                    capability_cache=None,
+                    asset_dir=None,
+                )
+
+            self.assertTrue(group["auto_matched_online_app"])
+            self.assertEqual(group["selected_match_app_id"], "deb-app")
+            self.assertEqual(group["package_family"], "deb")
+            self.assertEqual(group["existing_matches"][0]["package_family"], "deb")
 
     def test_online_app_detail_is_exposed_as_package_rows_per_arch(self) -> None:
         cache = CapabilityCache(
@@ -1228,13 +1383,20 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
         self.assertEqual(result.rows[1]["status"], "submit_failed")
         self.assertIn("existing app not found", result.rows[1]["message"])
 
-def _make_package_group(package_path: Path, *, pkg_name: str = "demo-app", pkg_version: str = "1.0.0") -> PackageGroup:
+def _make_package_group(
+    package_path: Path,
+    *,
+    pkg_name: str = "demo-app",
+    pkg_version: str = "1.0.0",
+    package_family: str = "deb",
+    package_format: str = "deb",
+) -> PackageGroup:
     return PackageGroup(
         packages=(
             PackageMetadata(
                 path=package_path,
-                package_family="deb",
-                package_format="deb",
+                package_family=package_family,
+                package_format=package_format,
                 pkg_name=pkg_name,
                 pkg_version=pkg_version,
                 pkg_arch="amd64",

@@ -41,6 +41,7 @@ from ui.backend import (
     build_target_options,
     package_group_store_arch_codes,
 )
+from appstore.appstore_client import package_family_from_app_detail, package_format_from_app_detail
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences
 from appstore.session_state import SessionStateStore
@@ -114,6 +115,8 @@ def _match_to_json(match) -> dict:
         "detail_id": match.detail_id,
         "pkg_name": match.pkg_name,
         "app_name": match.app_name,
+        "package_family": getattr(match, "package_family", ""),
+        "package_format": getattr(match, "package_format", ""),
     }
 
 
@@ -638,12 +641,12 @@ def _online_targets_from_detail(
 
 def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, defaults: dict, capability_cache) -> dict:
     data = _detail_data(existing_app_detail)
-    basic_info = data.get("app_basic_info") or {}
     fit_info = data.get("app_fit_info") or {}
     origin_pkgs = data.get("app_origin_pkgs") if isinstance(data.get("app_origin_pkgs"), list) else []
-    package_install_mode = int(basic_info.get("pkgInstallMode", 1) or 1)
-    package_family = "linglong" if package_install_mode == 2 else "deb"
-    package_format = "uab" if package_family == "linglong" else "deb"
+    package_family = package_family_from_app_detail(existing_app_detail) or "deb"
+    package_format = package_format_from_app_detail(existing_app_detail, package_family) or (
+        "uab" if package_family == "linglong" else "deb"
+    )
 
     arch_codes = _dedupe(_code_items(fit_info.get("arch")))
     if not arch_codes:
@@ -936,25 +939,52 @@ def _group_with_auto_matched_online_defaults(
     login_context,
     capability_cache,
 ) -> dict:
-    if login_context is None or len(matches) != 1:
+    if login_context is None or not matches:
         return group
-    match = matches[0]
-    if not match.detail_id:
-        return group
-    try:
-        detail = fetch_existing_app_detail(login_context.client, match)
-        defaults = build_existing_detail_editor_defaults(
-            detail,
-            fallback_name=str(group.get("display_name") or match.app_name or match.pkg_name),
-        )
-        defaults.update(_sync_existing_detail_assets(match, detail, session=getattr(login_context.client, "session", None)))
-        online_group = _online_group_from_detail(match, detail, defaults, capability_cache)
-    except Exception as exc:
+    target_family = str(group.get("package_family", "") or "").strip()
+    online_groups: list[dict] = []
+    match_warnings: list[str] = []
+
+    for match in matches:
+        if not match.detail_id:
+            continue
+        if target_family and getattr(match, "package_family", "") and match.package_family != target_family:
+            continue
+        try:
+            detail = fetch_existing_app_detail(login_context.client, match)
+            detail_family = package_family_from_app_detail(detail)
+            if target_family and detail_family and detail_family != target_family:
+                continue
+            detail_format = package_format_from_app_detail(detail, detail_family)
+            effective_match = StoreAppMatch(
+                app_id=match.app_id,
+                detail_id=match.detail_id,
+                pkg_name=match.pkg_name,
+                app_name=match.app_name,
+                package_family=detail_family or getattr(match, "package_family", ""),
+                package_format=detail_format or getattr(match, "package_format", ""),
+            )
+            defaults = build_existing_detail_editor_defaults(
+                detail,
+                fallback_name=str(group.get("display_name") or effective_match.app_name or effective_match.pkg_name),
+            )
+            defaults.update(_sync_existing_detail_assets(effective_match, detail, session=getattr(login_context.client, "session", None)))
+            online_group = _online_group_from_detail(effective_match, detail, defaults, capability_cache)
+            if target_family and str(online_group.get("package_family", "") or "").strip() != target_family:
+                continue
+            online_groups.append(online_group)
+        except Exception as exc:
+            match_warnings.append(f"{match.app_name or match.pkg_name or match.app_id}: {exc}")
+
+    if match_warnings:
         warnings = list(group.get("asset_warnings", []) or [])
-        warnings.append(f"自动匹配线上应用失败：{exc}")
+        warnings.extend(f"自动匹配线上应用失败：{warning}" for warning in match_warnings)
         group = dict(group)
         group["asset_warnings"] = _dedupe_json_strings(warnings)
+
+    if len(online_groups) != 1:
         return group
+    online_group = online_groups[0]
     return _merge_auto_matched_online_group(group, online_group)
 
 
@@ -1143,6 +1173,9 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
         "last_release_key": preferences.last_release_key,
         "last_pkg_channel": preferences.last_pkg_channel,
         "last_session_account": preferences.last_session_account,
+        "remember_credentials": preferences.remember_credentials,
+        "remembered_username": preferences.remembered_username,
+        "remembered_password": preferences.remembered_password,
     }
 
 
@@ -1167,6 +1200,14 @@ def _coerce_int(value) -> int:
         return max(0, int(float(text)))
     except ValueError:
         return 0
+
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _online_payload_pkg_arch(package_payload: dict) -> str:
@@ -1316,6 +1357,8 @@ def _group_payload_to_selected_match(group_payload: dict) -> StoreAppMatch | Non
             detail_id=str(match_payload.get("detail_id", "")).strip(),
             pkg_name=str(match_payload.get("pkg_name", "")).strip(),
             app_name=str(match_payload.get("app_name", "")).strip(),
+            package_family=str(match_payload.get("package_family", "")).strip(),
+            package_format=str(match_payload.get("package_format", "")).strip(),
         )
     return None
 
@@ -1482,27 +1525,46 @@ def _load_capabilities(login_context):
 
 
 def command_bootstrap(payload: dict) -> dict:
-    preferred_account = str(payload.get("preferred_account", "")).strip()
+    preferences = PreferenceStore().load()
+    preferred_account = str(payload.get("preferred_account", "")).strip() or preferences.last_session_account.strip()
     login_context = try_restore_cached_login(preferred_account)
     capability_cache = _load_capabilities(login_context)
     return {
         "login": _login_to_json(login_context),
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": _load_categories(login_context),
+        "preferences": _preferences_to_json(preferences),
     }
 
 
 def command_login_credentials(payload: dict) -> dict:
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
+    remember_credentials = _coerce_bool(payload.get("remember_credentials", False))
     if not username or not password:
         raise ValueError("username and password are required")
     login_context = login_with_credentials(username, password)
     capability_cache = _load_capabilities(login_context)
+    preference_store = PreferenceStore()
+    current_preferences = preference_store.load()
+    preferences = UIPreferences(
+        recent_category_ids=current_preferences.recent_category_ids,
+        recent_regions=current_preferences.recent_regions,
+        last_output_dir=current_preferences.last_output_dir,
+        last_asset_dir=current_preferences.last_asset_dir,
+        last_release_key=current_preferences.last_release_key,
+        last_pkg_channel=current_preferences.last_pkg_channel,
+        last_session_account=username,
+        remember_credentials=remember_credentials,
+        remembered_username=username if remember_credentials else "",
+        remembered_password=password if remember_credentials else "",
+    )
+    preference_store.save(preferences)
     return {
         "login": _login_to_json(login_context),
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": _load_categories(login_context),
+        "preferences": _preferences_to_json(preferences),
     }
 
 
@@ -1641,6 +1703,9 @@ def command_save_preferences(payload: dict) -> dict:
         last_release_key=str(preferences_payload.get("last_release_key", "") or "stable"),
         last_pkg_channel=str(preferences_payload.get("last_pkg_channel", "") or "stable"),
         last_session_account=str(preferences_payload.get("last_session_account", "") or ""),
+        remember_credentials=_coerce_bool(preferences_payload.get("remember_credentials", False)),
+        remembered_username=str(preferences_payload.get("remembered_username", "") or ""),
+        remembered_password=str(preferences_payload.get("remembered_password", "") or ""),
     )
     path = PreferenceStore().save(preferences)
     return {

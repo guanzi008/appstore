@@ -1441,6 +1441,36 @@ class RunBatchTests(unittest.TestCase):
         self.assertEqual([row["status"] for row in report], ["submitted", "submitted"])
         self.assertEqual([row["app_id"] for row in report], ["browser-app-id", "browser-app-id"])
 
+    def test_target_app_lookup_filters_same_name_by_package_family(self) -> None:
+        client = FakeClient()
+        client.matches_by_pkg_name["same-name"] = [
+            {"app_id": "deb-app", "id": "detail-deb", "pkg_name": "same-name"},
+            {"app_id": "linglong-app", "id": "detail-linglong", "pkg_name": "same-name"},
+        ]
+        client.detail_by_id["detail-deb"] = {"app_basic_info": {"pkgInstallMode": 1}}
+        client.detail_by_id["detail-linglong"] = {"app_basic_info": {"pkgInstallMode": 2}}
+        app = AppRecord(
+            app_key="same-name",
+            app_name_zh="Same Name",
+            pkg_name="same-name",
+            category_id=1,
+            website="",
+            short_desc_zh="",
+            full_desc_zh="",
+            icon_path=Path("."),
+            screenshot_paths=(),
+        )
+
+        app_id = upload_batch._resolve_target_app_id(
+            client,
+            app,
+            {},
+            {},
+            package_family="linglong",
+        )
+
+        self.assertEqual(app_id, "linglong-app")
+
     def test_main_upload_packages_subcommand_updates_existing_app_without_workbook(self) -> None:
         output_dir = self.root / "upload-packages-output"
         cache_dir = self.root / "capabilities-cache"

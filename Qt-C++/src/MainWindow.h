@@ -91,6 +91,7 @@ private:
     QJsonArray m_myAppsRows;
     QJsonObject m_currentGroup;
     QJsonObject m_selectedOnlineApp;
+    QJsonObject m_preferences;
     QJsonArray m_categories;
     QString m_preferredAccount;
     QString m_selectedPackagePath;

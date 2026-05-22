@@ -9,7 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from appstore.appstore_client import AppStoreClient, build_requests_session
+from appstore.appstore_client import (
+    AppStoreClient,
+    build_requests_session,
+    package_family_from_app_detail,
+    package_family_from_store_row,
+    package_format_from_app_detail,
+    package_format_from_store_row,
+)
 from appstore.browser_runtime import capture_browser_session_state, wait_for_logged_in_portal_state
 from appstore.capabilities import CapabilityCache, build_system_templates, load_capability_cache, sync_capabilities_to_cache
 from appstore.capture_workflow import CaptureOptions, CapturePackageResult, capture_packages
@@ -58,6 +65,8 @@ class StoreAppMatch:
     detail_id: str
     pkg_name: str
     app_name: str
+    package_family: str = ""
+    package_format: str = ""
 
 
 @dataclass(frozen=True)
@@ -463,12 +472,15 @@ def find_existing_apps(
     matches = client.find_apps_by_pkg_name(pkg_name)
     result: list[StoreAppMatch] = []
     for row in matches:
+        package_family = package_family_from_store_row(row)
         result.append(
             StoreAppMatch(
                 app_id=str(row.get("app_id", "")).strip(),
                 detail_id=str(row.get("id", "")).strip(),
                 pkg_name=str(row.get("pkg_name", "")).strip(),
                 app_name=str(row.get("app_name", "") or row.get("name", "") or row.get("appName", "")).strip(),
+                package_family=package_family,
+                package_format=package_format_from_store_row(row, package_family),
             )
         )
     return tuple(result)
@@ -1381,12 +1393,51 @@ def _resolve_batch_existing_match(
     matches = find_existing_apps(client, pkg_name=package_group.pkg_name)
     if not matches:
         raise RuntimeError(f"existing app not found for package name: {package_group.pkg_name}")
+    matches = tuple(
+        match
+        for match in (
+            _store_match_with_package_family(client, match, package_group.package_family) for match in matches
+        )
+        if match is not None
+    )
+    if not matches:
+        raise RuntimeError(
+            f"existing {package_group.package_family} app not found for package name: {package_group.pkg_name}"
+        )
     if len(matches) > 1:
         raise RuntimeError(
-            f"multiple app matches found for package name: {package_group.pkg_name}; "
+            f"multiple {package_group.package_family} app matches found for package name: {package_group.pkg_name}; "
             "batch update currently requires exactly one store match"
         )
     return matches[0]
+
+
+def _store_match_with_package_family(
+    client: AppStoreClient,
+    match: StoreAppMatch,
+    package_family: str,
+) -> StoreAppMatch | None:
+    requested_family = package_family.strip()
+    if requested_family not in {"deb", "linglong"}:
+        return match
+    if match.package_family:
+        return match if match.package_family == requested_family else None
+    if not match.detail_id:
+        return match
+
+    detail = fetch_existing_app_detail(client, match)
+    detail_family = package_family_from_app_detail(detail)
+    if detail_family and detail_family != requested_family:
+        return None
+    detail_format = package_format_from_app_detail(detail, detail_family)
+    return StoreAppMatch(
+        app_id=match.app_id,
+        detail_id=match.detail_id,
+        pkg_name=match.pkg_name,
+        app_name=match.app_name,
+        package_family=detail_family or match.package_family,
+        package_format=detail_format or match.package_format,
+    )
 
 
 def _existing_update_defaults(existing_app_detail: dict, *, fallback_name: str) -> dict[str, object]:
