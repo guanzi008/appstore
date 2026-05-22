@@ -1,3 +1,12 @@
+com.uniontech.utpublisher (0.1.2) unstable; urgency=medium
+
+  * Improve existing app update handling for package row replacement.
+  * Match local packages against online apps by package name and package type.
+  * Add account/password remember option for desktop login.
+  * Refine target baseline selection and screenshot preprocessing behavior.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Sat, 23 May 2026 10:00:00 +0800
+
 com.uniontech.utpublisher (0.1.1) unstable; urgency=medium
 
   * Rename the desktop product name to 应用投递助手.
