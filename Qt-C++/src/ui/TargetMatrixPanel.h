@@ -16,6 +16,8 @@ class TargetMatrixPanel final : public QFrame
 public:
     explicit TargetMatrixPanel(QWidget *parent = nullptr);
 
+    static bool editTargets(QJsonObject *group, const QString &packagePath, QWidget *parent = nullptr);
+
     void setGroup(const QJsonObject &group);
     void setSelectedPackagePath(const QString &packagePath);
     QJsonObject groupWithTargets(const QJsonObject &baseGroup) const;

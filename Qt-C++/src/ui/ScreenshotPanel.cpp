@@ -35,7 +35,7 @@ ScreenshotPanel::ScreenshotPanel(QWidget *parent)
     : QFrame(parent)
 {
     setObjectName(QStringLiteral("Card"));
-    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     buildUi();
 }
 

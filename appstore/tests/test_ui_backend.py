@@ -849,6 +849,67 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
             self.assertEqual(options[0].selected_baseline_ids, ())
             self.assertEqual(options[0].unsupported_baseline_ids, ())
 
+    def test_build_target_options_uses_arch_default_system_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_path = Path(temp_dir) / "demo_1.0.0_amd64.deb"
+            package_path.write_bytes(b"deb")
+            package_group = _make_package_group(package_path)
+            cache = CapabilityCache(
+                generated_at="2026-04-25T18:00:00+08:00",
+                deb_system_lines={
+                    "11": SystemLine(code="11", label="社区版V23", family="deb"),
+                    "21": SystemLine(code="21", label="专业版V25", family="deb"),
+                },
+                linglong_system_lines={},
+                baseline_options={},
+            )
+
+            options = build_target_options(
+                cache,
+                package_group=package_group,
+                default_target_system_lines={"x86": ("21",)},
+            )
+
+            selected_codes = tuple(option.code for option in options if option.selected)
+            self.assertEqual(selected_codes, ("21",))
+            self.assertTrue(all(option.baseline_id == "" for option in options))
+
+    def test_build_target_options_supports_loongarch64_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_path = Path(temp_dir) / "demo_1.0.0_loongarch64.deb"
+            package_path.write_bytes(b"deb")
+            package_group = _make_package_group(package_path, pkg_arch="loongarch64")
+            cache = CapabilityCache(
+                generated_at="2026-04-25T18:00:00+08:00",
+                deb_system_lines={"11": SystemLine(code="11", label="社区版V23", family="deb")},
+                linglong_system_lines={},
+                baseline_options={},
+            )
+
+            options = build_target_options(cache, package_group=package_group)
+
+            self.assertEqual(len(options), 1)
+            self.assertEqual(options[0].package_arch, "loongarch64")
+            self.assertEqual(options[0].code, "11")
+
+    def test_build_target_options_supports_wine_deb_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_path = Path(temp_dir) / "wine-helper_1.0.0_amd64.deb"
+            package_path.write_bytes(b"deb")
+            package_group = _make_package_group(package_path, pkg_name="wine-helper")
+            cache = CapabilityCache(
+                generated_at="2026-04-25T18:00:00+08:00",
+                deb_system_lines={"11": SystemLine(code="11", label="社区版V23", family="deb")},
+                linglong_system_lines={},
+                baseline_options={},
+            )
+
+            options = build_target_options(cache, package_group=package_group)
+
+            self.assertEqual(len(options), 1)
+            self.assertEqual(options[0].package_arch, "amd64")
+            self.assertEqual(options[0].code, "11")
+
     def test_submit_applications_batch_supports_mixed_update_and_new(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
@@ -1388,6 +1449,7 @@ def _make_package_group(
     *,
     pkg_name: str = "demo-app",
     pkg_version: str = "1.0.0",
+    pkg_arch: str = "amd64",
     package_family: str = "deb",
     package_format: str = "deb",
 ) -> PackageGroup:
@@ -1399,7 +1461,7 @@ def _make_package_group(
                 package_format=package_format,
                 pkg_name=pkg_name,
                 pkg_version=pkg_version,
-                pkg_arch="amd64",
+                pkg_arch=pkg_arch,
                 pkg_size=1234,
                 sha256="abc123",
                 display_name=pkg_name,

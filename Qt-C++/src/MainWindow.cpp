@@ -15,6 +15,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -22,6 +23,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QJsonArray>
@@ -32,10 +34,14 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QStringList>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <vector>
 
 namespace {
 
@@ -403,6 +409,7 @@ void MainWindow::buildUi()
     });
     connect(m_sidebar, &SidebarWidget::loadMoreMyAppsRequested, this, &MainWindow::loadMoreMyApps);
     connect(m_sidebar, &SidebarWidget::onlineAppSelected, this, &MainWindow::selectOnlineApp);
+    connect(m_sidebar, &SidebarWidget::settingsRequested, this, &MainWindow::openPreferences);
     connect(m_sidebar, &SidebarWidget::groupSelected, this, [this](const QString &key) {
         persistCurrentGroupFromUi();
         const QJsonObject group = groupByKey(key);
@@ -468,6 +475,7 @@ void MainWindow::buildUi()
 
     m_metadataPanel = new MetadataPanel(workspace);
     connect(m_metadataPanel, &MetadataPanel::packageSelected, this, &MainWindow::selectPackage);
+    connect(m_metadataPanel, &MetadataPanel::packageTargetEditRequested, this, &MainWindow::editPackageTargets);
     leftColumn->addWidget(m_metadataPanel, 1);
 
     auto *rightPane = new QFrame(workspace);
@@ -486,10 +494,7 @@ void MainWindow::buildUi()
     connect(m_screenshotPanel, &ScreenshotPanel::captureRequested, this, &MainWindow::captureScreenshots);
     connect(m_screenshotPanel, &ScreenshotPanel::preprocessRequested, this, &MainWindow::preprocessAssets);
     connect(m_screenshotPanel, &ScreenshotPanel::removeScreenshotRequested, this, &MainWindow::removeScreenshotAt);
-    rightColumn->addWidget(m_screenshotPanel);
-
-    m_targetPanel = new TargetMatrixPanel(rightPane);
-    rightColumn->addWidget(m_targetPanel, 1);
+    rightColumn->addWidget(m_screenshotPanel, 1);
 
     m_workflowBar = new WorkflowBar(workspace);
     connect(m_workflowBar, &WorkflowBar::submitRequested, this, &MainWindow::submitCurrentGroup);
@@ -571,6 +576,15 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         if (loggedIn && command != QStringLiteral("logout")) {
             listMyApps();
         }
+        return;
+    }
+
+    if (command == QStringLiteral("save_preferences")) {
+        const QJsonObject preferences = data.value(QStringLiteral("preferences")).toObject();
+        if (!preferences.isEmpty()) {
+            m_preferences = preferences;
+        }
+        m_workflowBar->setStatusText(QStringLiteral("偏好设置已保存，新解析的包会按默认系统线初始化。"));
         return;
     }
 
@@ -850,8 +864,6 @@ void MainWindow::renderCurrentGroup()
     m_metadataPanel->setSelectedPackagePath(m_selectedPackagePath);
     const QJsonObject packageView = groupForSelectedPackageView(m_currentGroup);
     m_screenshotPanel->setGroup(packageView);
-    m_targetPanel->setGroup(m_currentGroup);
-    m_targetPanel->setSelectedPackagePath(m_selectedPackagePath);
 }
 
 void MainWindow::renderSidebar()
@@ -886,7 +898,27 @@ void MainWindow::selectPackage(const QString &packagePath)
     const QString label = packageLabel(packageByPath(group, m_selectedPackagePath));
     renderCurrentGroup();
     renderSidebar();
-    m_workflowBar->setStatusText(QStringLiteral("已选择包：%1。右侧显示该包的截图与适配范围。").arg(label));
+    m_workflowBar->setStatusText(QStringLiteral("已选择包：%1。右侧显示该包截图，右键包行可调整适配范围。").arg(label));
+}
+
+void MainWindow::editPackageTargets(const QString &packagePath)
+{
+    if (m_currentGroup.isEmpty()) {
+        return;
+    }
+    QJsonObject group = currentGroupFromUi();
+    const QString selectedPath = effectiveSelectedPackagePath(group, packagePath);
+    if (selectedPath.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("未选择包"), QStringLiteral("请先选择一个包。"));
+        return;
+    }
+    if (TargetMatrixPanel::editTargets(&group, selectedPath, this)) {
+        m_selectedPackagePath = selectedPath;
+        group.insert(QStringLiteral("selected_package_path"), selectedPath);
+        setCurrentGroup(group);
+        const QString label = packageLabel(packageByPath(group, selectedPath));
+        m_workflowBar->setStatusText(QStringLiteral("已更新适配范围：%1。").arg(label));
+    }
 }
 
 QJsonObject MainWindow::normalizedGroup(QJsonObject group) const
@@ -975,7 +1007,6 @@ QJsonObject MainWindow::currentGroupFromUi() const
         return {};
     }
     QJsonObject group = m_metadataPanel->groupFromUi(m_currentGroup);
-    group = m_targetPanel->groupWithTargets(group);
     if (!m_selectedPackagePath.isEmpty()) {
         group.insert(QStringLiteral("selected_package_path"), m_selectedPackagePath);
     }
@@ -1121,6 +1152,148 @@ void MainWindow::syncStoreData()
     QJsonObject payload;
     payload.insert(QStringLiteral("preferred_account"), m_preferredAccount);
     runBridgeCommand(QStringLiteral("sync_store_data"), payload, 300000);
+}
+
+void MainWindow::openPreferences()
+{
+    if (m_bridge->isBusy()) {
+        QMessageBox::information(this, QStringLiteral("后端忙碌"), QStringLiteral("当前后端任务尚未结束。"));
+        return;
+    }
+
+    struct SystemLineOption {
+        QString code;
+        QString label;
+    };
+    std::vector<SystemLineOption> systemLines;
+    const QJsonArray targets = m_currentGroup.value(QStringLiteral("targets")).toArray();
+    for (const QJsonValue &value : targets) {
+        const QJsonObject target = value.toObject();
+        const QString code = target.value(QStringLiteral("code")).toString().trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+        bool exists = false;
+        for (const SystemLineOption &option : systemLines) {
+            if (option.code == code) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            const QString label = AppJson::stringValue(target, QStringLiteral("label"), code);
+            systemLines.push_back(SystemLineOption{code, label});
+        }
+    }
+
+    if (systemLines.empty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("暂无系统线数据"),
+            QStringLiteral("请先登录并同步商店数据，再选择我的应用或解析一个包后配置默认系统线。"));
+        return;
+    }
+
+    struct CheckBinding {
+        QString archKey;
+        QString systemCode;
+        QCheckBox *checkBox = nullptr;
+    };
+    std::vector<CheckBinding> bindings;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("偏好设置"));
+    dialog.setAttribute(Qt::WA_StyledBackground, true);
+    dialog.setStyleSheet(styleSheet());
+    dialog.resize(760, 520);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(8);
+
+    auto *title = new QLabel(QStringLiteral("默认系统线"), &dialog);
+    title->setObjectName(QStringLiteral("DialogTitle"));
+    layout->addWidget(title);
+
+    auto *hint = new QLabel(QStringLiteral("默认系统线仅作用于新解析的本地包；已选择线上应用会继续使用线上原有适配项。"), &dialog);
+    hint->setObjectName(QStringLiteral("MutedText"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *scroll = new QScrollArea(&dialog);
+    scroll->setObjectName(QStringLiteral("FlatScroll"));
+    scroll->setWidgetResizable(true);
+    auto *host = new QWidget(scroll);
+    auto *grid = new QGridLayout(host);
+    grid->setContentsMargins(0, 0, 6, 0);
+    grid->setHorizontalSpacing(14);
+    grid->setVerticalSpacing(6);
+
+    const QJsonObject defaultLines = m_preferences.value(QStringLiteral("default_target_system_lines")).toObject();
+    const QStringList archKeys = {QStringLiteral("x86"), QStringLiteral("arm64"), QStringLiteral("loong64")};
+    const QStringList archLabels = {QStringLiteral("x86 / amd64"), QStringLiteral("arm64"), QStringLiteral("loong64")};
+    auto containsCode = [](const QJsonArray &array, const QString &code) {
+        for (const QJsonValue &value : array) {
+            if (value.toString().trimmed() == code) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int column = 0; column < archKeys.size(); ++column) {
+        auto *columnHost = new QWidget(host);
+        auto *columnLayout = new QVBoxLayout(columnHost);
+        columnLayout->setContentsMargins(0, 0, 0, 0);
+        columnLayout->setSpacing(6);
+        auto *caption = new QLabel(archLabels.at(column), columnHost);
+        caption->setObjectName(QStringLiteral("CardTitle"));
+        columnLayout->addWidget(caption);
+
+        const QString archKey = archKeys.at(column);
+        const QJsonArray selectedCodes = defaultLines.value(archKey).toArray();
+        for (const SystemLineOption &option : systemLines) {
+            auto *checkBox = new QCheckBox(option.label, columnHost);
+            checkBox->setChecked(containsCode(selectedCodes, option.code));
+            checkBox->setToolTip(QStringLiteral("系统线代码：%1").arg(option.code));
+            columnLayout->addWidget(checkBox);
+            bindings.push_back(CheckBinding{archKey, option.code, checkBox});
+        }
+        columnLayout->addStretch(1);
+        grid->addWidget(columnHost, 0, column);
+    }
+    scroll->setWidget(host);
+    layout->addWidget(scroll, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QJsonObject nextDefaults;
+    for (const QString &archKey : archKeys) {
+        QJsonArray codes;
+        for (const CheckBinding &binding : bindings) {
+            if (binding.archKey == archKey && binding.checkBox != nullptr && binding.checkBox->isChecked()) {
+                codes.append(binding.systemCode);
+            }
+        }
+        if (!codes.isEmpty()) {
+            nextDefaults.insert(archKey, codes);
+        }
+    }
+
+    QJsonObject nextPreferences = m_preferences;
+    nextPreferences.insert(QStringLiteral("default_target_system_lines"), nextDefaults);
+    m_preferences = nextPreferences;
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("preferences"), nextPreferences);
+    runBridgeCommand(QStringLiteral("save_preferences"), payload, 120000);
 }
 
 void MainWindow::preprocessAssets()

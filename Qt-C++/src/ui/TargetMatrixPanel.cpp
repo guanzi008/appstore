@@ -622,6 +622,23 @@ TargetMatrixPanel::TargetMatrixPanel(QWidget *parent)
     buildUi();
 }
 
+bool TargetMatrixPanel::editTargets(QJsonObject *group, const QString &packagePath, QWidget *parent)
+{
+    if (group == nullptr || group->isEmpty()) {
+        return false;
+    }
+    TargetConfigDialog dialog(*group, packagePath, parent);
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+    *group = dialog.group();
+    const QString selectedPath = effectivePackagePath(*group, packagePath);
+    if (!selectedPath.isEmpty()) {
+        group->insert(QStringLiteral("selected_package_path"), selectedPath);
+    }
+    return true;
+}
+
 void TargetMatrixPanel::buildUi()
 {
     auto *layout = new QVBoxLayout(this);

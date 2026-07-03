@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -29,6 +29,7 @@ class UIPreferences:
     remember_credentials: bool = False
     remembered_username: str = ""
     remembered_password: str = ""
+    default_target_system_lines: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 class PreferenceStore:
@@ -55,6 +56,7 @@ class PreferenceStore:
             remember_credentials=_normalize_bool(payload.get("remember_credentials", False)),
             remembered_username=str(payload.get("remembered_username", "") or ""),
             remembered_password=str(payload.get("remembered_password", "") or ""),
+            default_target_system_lines=_normalize_system_line_defaults(payload.get("default_target_system_lines")),
         )
 
     def save(self, preferences: UIPreferences) -> Path:
@@ -92,3 +94,21 @@ def _normalize_bool(raw) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_system_line_defaults(raw) -> dict[str, tuple[str, ...]]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, tuple[str, ...]] = {}
+    for key, values in raw.items():
+        arch = str(key).strip().lower()
+        if not arch or not isinstance(values, list):
+            continue
+        codes: list[str] = []
+        for value in values:
+            code = str(value).strip()
+            if code and code not in codes:
+                codes.append(code)
+        if codes:
+            result[arch] = tuple(codes)
+    return result

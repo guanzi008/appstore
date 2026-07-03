@@ -264,14 +264,14 @@ void apply(QWidget *root)
         QTabWidget#LanguageTabs::pane {
             border: 0;
             background: transparent;
-            margin-top: 4px;
+            margin-top: 2px;
         }
         QTabWidget#LanguageTabs QTabBar::tab {
             background: %21;
             color: %20;
             border: 1px solid %15;
             border-radius: 8px;
-            padding: 4px 12px;
+            padding: 3px 11px;
             margin-right: 5px;
             font-size: 11px;
             font-weight: 800;
@@ -291,10 +291,10 @@ void apply(QWidget *root)
             font-weight: 620;
         }
         QLineEdit, QComboBox {
-            padding: 4px 8px;
+            padding: 3px 8px;
         }
         QTextEdit {
-            padding: 6px 8px;
+            padding: 4px 8px;
         }
         QTextEdit#LargeText {
             font-size: 11px;

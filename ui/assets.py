@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,79 +51,96 @@ def preprocess_assets(
     max_screenshots: int = 6,
 ) -> AssetBundle:
     output_dir = output_dir.expanduser().resolve()
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="utpublisher-assets-") as temp_dir:
+        temp_root = Path(temp_dir)
+        if asset_dir is not None and output_dir.exists() and _path_is_within(asset_dir.expanduser().resolve(), output_dir):
+            preexisting_icon, preexisting_screenshots = detect_asset_candidates(package_group, asset_dir=asset_dir)
+            manual_icon_path = manual_icon_path or preexisting_icon
+            manual_screenshot_paths = tuple(manual_screenshot_paths or preexisting_screenshots)
 
-    warnings: list[str] = []
-    detected_icon, detected_screenshots = detect_asset_candidates(package_group, asset_dir=asset_dir)
-    icon_source = manual_icon_path or detected_icon
-    screenshot_sources = tuple(manual_screenshot_paths or detected_screenshots)
-
-    if icon_source is None:
-        extracted_dir = output_dir / "extracted"
-        first_package = package_group.packages[0]
-        if first_package.package_family == "deb":
-            icon_source = extract_deb_icon(
-                first_package.path,
-                pkg_name=package_group.pkg_name,
-                output_dir=extracted_dir,
+        manual_icon_path = _snapshot_asset(manual_icon_path, output_dir=output_dir, temp_root=temp_root)
+        manual_screenshot_paths = tuple(
+            path
+            for path in (
+                _snapshot_asset(path, output_dir=output_dir, temp_root=temp_root, prefix=f"screenshot-{index:02d}")
+                for index, path in enumerate(manual_screenshot_paths, start=1)
             )
-        else:
-            icon_source = extract_archive_icon(
-                first_package.path,
-                pkg_name=package_group.pkg_name,
-                output_dir=extracted_dir,
-            )
-    if icon_source is None:
-        warnings.append("未能自动探测到图标，请手动指定图标文件。")
-
-    if not screenshot_sources:
-        warnings.append("未检测到截图，可手动指定资源目录或使用自动截图。")
-
-    processed_icon = _prepare_icon(icon_source, output_dir / "icon.png") if icon_source is not None else None
-
-    processed_screenshots: list[Path] = []
-    screenshots_dir = output_dir / "screenshots"
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
-    for index, source in enumerate(screenshot_sources[: max_screenshots], start=1):
-        try:
-            processed_screenshots.append(
-                _prepare_screenshot(source, screenshots_dir / f"screen-{index:02d}")
-            )
-        except Exception as exc:
-            warnings.append(f"截图处理失败 {source.name}: {exc}")
-
-    validation_report = None
-    if processed_screenshots:
-        validation_report = validate_screenshot_paths(
-            tuple(processed_screenshots),
-            min_width=640,
-            min_height=360,
-            min_file_size=4096,
-            min_gray_stddev=2.5,
-            min_unique_gray_levels=8,
-        )
-        processed_screenshots = list(validation_report.accepted_paths)
-        for item in validation_report.items:
-            if item.accepted:
-                continue
-            reasons = ", ".join(item.reasons) if item.reasons else "rejected"
-            warnings.append(f"{item.analysis.path.name} 被拒绝: {reasons}")
-
-    if len(processed_screenshots) < min_screenshots:
-        warnings.append(
-            f"有效截图不足：当前 {len(processed_screenshots)} 张，至少需要 {min_screenshots} 张。"
+            if path is not None
         )
 
-    return AssetBundle(
-        icon_source=icon_source,
-        screenshot_sources=screenshot_sources,
-        icon_path=processed_icon,
-        screenshot_paths=tuple(processed_screenshots),
-        validation_report=validation_report,
-        warnings=tuple(warnings),
-    )
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        warnings: list[str] = []
+        detected_icon, detected_screenshots = detect_asset_candidates(package_group, asset_dir=asset_dir)
+        icon_source = manual_icon_path or detected_icon
+        screenshot_sources = tuple(manual_screenshot_paths or detected_screenshots)
+
+        if icon_source is None:
+            extracted_dir = output_dir / "extracted"
+            first_package = package_group.packages[0]
+            if first_package.package_family == "deb":
+                icon_source = extract_deb_icon(
+                    first_package.path,
+                    pkg_name=package_group.pkg_name,
+                    output_dir=extracted_dir,
+                )
+            else:
+                icon_source = extract_archive_icon(
+                    first_package.path,
+                    pkg_name=package_group.pkg_name,
+                    output_dir=extracted_dir,
+                )
+        if icon_source is None:
+            warnings.append("未能自动探测到图标，请手动指定图标文件。")
+
+        if not screenshot_sources:
+            warnings.append("未检测到截图，可手动指定资源目录或使用自动截图。")
+
+        processed_icon = _prepare_icon(icon_source, output_dir / "icon.png") if icon_source is not None else None
+
+        processed_screenshots: list[Path] = []
+        screenshots_dir = output_dir / "screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        for index, source in enumerate(screenshot_sources[: max_screenshots], start=1):
+            try:
+                processed_screenshots.append(
+                    _prepare_screenshot(source, screenshots_dir / f"screen-{index:02d}")
+                )
+            except Exception as exc:
+                warnings.append(f"截图处理失败 {source.name}: {exc}")
+
+        validation_report = None
+        if processed_screenshots:
+            validation_report = validate_screenshot_paths(
+                tuple(processed_screenshots),
+                min_width=640,
+                min_height=360,
+                min_file_size=4096,
+                min_gray_stddev=2.5,
+                min_unique_gray_levels=8,
+            )
+            processed_screenshots = list(validation_report.accepted_paths)
+            for item in validation_report.items:
+                if item.accepted:
+                    continue
+                reasons = ", ".join(item.reasons) if item.reasons else "rejected"
+                warnings.append(f"{item.analysis.path.name} 被拒绝: {reasons}")
+
+        if len(processed_screenshots) < min_screenshots:
+            warnings.append(
+                f"有效截图不足：当前 {len(processed_screenshots)} 张，至少需要 {min_screenshots} 张。"
+            )
+
+        return AssetBundle(
+            icon_source=icon_source,
+            screenshot_sources=screenshot_sources,
+            icon_path=processed_icon,
+            screenshot_paths=tuple(processed_screenshots),
+            validation_report=validation_report,
+            warnings=tuple(warnings),
+        )
 
 
 def _common_parent(paths: tuple[Path, ...]) -> Path:
@@ -193,6 +211,34 @@ def _detect_screenshots(search_root: Path) -> tuple[Path, ...]:
 
 def _is_image_file(path: Path) -> bool:
     return path.exists() and path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES and path.stat().st_size > 1024
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _snapshot_asset(
+    source: Path | None,
+    *,
+    output_dir: Path,
+    temp_root: Path,
+    prefix: str = "asset",
+) -> Path | None:
+    if source is None:
+        return None
+    source = source.expanduser().resolve()
+    if not source.exists() or not source.is_file():
+        return source
+    if not _path_is_within(source, output_dir):
+        return source
+    suffix = source.suffix if source.suffix else ".bin"
+    target = temp_root / f"{prefix}{suffix}"
+    shutil.copy2(source, target)
+    return target
 
 
 def _prepare_icon(source: Path, target: Path) -> Path:

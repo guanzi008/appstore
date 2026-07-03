@@ -358,6 +358,7 @@ def build_target_options(
     cache: CapabilityCache,
     *,
     package_group: PackageGroup,
+    default_target_system_lines: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[SystemTargetOption, ...]:
     templates = [
         template
@@ -366,10 +367,12 @@ def build_target_options(
     ]
     result: list[SystemTargetOption] = []
     for package in package_group.packages:
+        default_codes = set((default_target_system_lines or {}).get(_preference_arch_key(package.pkg_arch), ()))
         for template in templates:
             baseline_options = tuple(
                 (option.baseline_id, option.minor_version) for option in template.baseline_options
             )
+            selected = template.sup_sys_code in default_codes
             result.append(
                 SystemTargetOption(
                     package_path=str(package.path),
@@ -379,13 +382,24 @@ def build_target_options(
                     label=template.system_label,
                     package_family=template.package_family,
                     baseline_options=baseline_options,
-                    selected=False,
+                    selected=selected,
                     baseline_id="",
                     selected_baseline_ids=(),
                     unsupported_baseline_ids=(),
                 )
             )
     return tuple(result)
+
+
+def _preference_arch_key(arch: str) -> str:
+    normalized = str(arch or "").strip().lower().replace("_", "-")
+    if normalized in {"amd64", "x86-64", "x86_64", "x64", "x86"}:
+        return "x86"
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"loong64", "loongarch64"}:
+        return "loong64"
+    return normalized
 
 
 def package_group_store_arch_codes(package_group: PackageGroup) -> tuple[str, ...]:

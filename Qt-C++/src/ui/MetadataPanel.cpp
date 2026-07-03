@@ -9,7 +9,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLayoutItem>
+#include <QMenu>
+#include <QAction>
 #include <QPixmap>
+#include <QPoint>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSizePolicy>
@@ -20,11 +23,11 @@
 
 namespace {
 
-constexpr int kControlHeight = 28;
+constexpr int kControlHeight = 26;
 constexpr int kLabelColumnWidth = 66;
 constexpr int kCategoryColumnWidth = 132;
-constexpr int kLanguageDescriptionHeight = 56;
-constexpr int kLanguageNoteHeight = 38;
+constexpr int kLanguageDescriptionHeight = 50;
+constexpr int kLanguageNoteHeight = 34;
 
 void configureLineEdit(QLineEdit *edit)
 {
@@ -40,8 +43,8 @@ void configureComboBox(QComboBox *comboBox)
 
 void configureTextEdit(QTextEdit *edit, int height)
 {
-    edit->setFixedHeight(height);
-    edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    edit->setMinimumHeight(height);
+    edit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     edit->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     edit->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 }
@@ -167,7 +170,7 @@ void MetadataPanel::buildUi()
     auto *packageHeader = new QHBoxLayout();
     packageHeader->setContentsMargins(0, 0, 0, 0);
     packageHeader->addWidget(makeCaption(QStringLiteral("包列表"), this));
-    auto *packageHint = new QLabel(QStringLiteral("点击包后右侧显示对应图标、截图与适配范围"), this);
+    auto *packageHint = new QLabel(QStringLiteral("点击包显示素材，右键包可调整适配范围"), this);
     packageHint->setObjectName(QStringLiteral("MutedText"));
     packageHeader->addWidget(packageHint, 1);
     layout->addLayout(packageHeader);
@@ -191,16 +194,29 @@ void MetadataPanel::buildUi()
     divider->setStyleSheet(QStringLiteral("color: rgba(180,195,210,120);"));
     layout->addWidget(divider);
 
+    auto *editorScroll = new QScrollArea(this);
+    editorScroll->setObjectName(QStringLiteral("FlatScroll"));
+    editorScroll->setWidgetResizable(true);
+    editorScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    editorScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    editorScroll->setFrameShape(QFrame::NoFrame);
+    editorScroll->setMinimumHeight(230);
+    auto *editorHost = new QWidget(editorScroll);
+    auto *editorLayout = new QVBoxLayout(editorHost);
+    editorLayout->setContentsMargins(0, 0, 4, 0);
+    editorLayout->setSpacing(4);
+
     auto *formGrid = new QGridLayout();
     formGrid->setContentsMargins(0, 0, 0, 0);
     formGrid->setHorizontalSpacing(8);
-    formGrid->setVerticalSpacing(4);
+    formGrid->setVerticalSpacing(3);
     formGrid->setColumnMinimumWidth(0, kLabelColumnWidth);
     formGrid->setColumnMinimumWidth(2, 46);
     formGrid->setColumnMinimumWidth(3, kCategoryColumnWidth);
     formGrid->setColumnStretch(1, 1);
     formGrid->setRowMinimumHeight(0, kControlHeight);
     formGrid->setRowMinimumHeight(1, kControlHeight);
+    formGrid->setRowStretch(2, 1);
     m_categoryCombo = new QComboBox(this);
     m_websiteEdit = new QLineEdit(this);
     m_websiteEdit->setPlaceholderText(QStringLiteral("官网或项目地址"));
@@ -220,17 +236,18 @@ void MetadataPanel::buildUi()
     m_languageTabs = new QTabWidget(this);
     m_languageTabs->setObjectName(QStringLiteral("LanguageTabs"));
     m_languageTabs->setDocumentMode(true);
-    m_languageTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_languageTabs->setMinimumHeight(238);
-    m_languageTabs->setMaximumHeight(250);
+    m_languageTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_languageTabs->setMinimumHeight(198);
 
     auto *zhPage = new QWidget(m_languageTabs);
     auto *zhGrid = new QGridLayout(zhPage);
-    zhGrid->setContentsMargins(0, 6, 0, 0);
+    zhGrid->setContentsMargins(0, 4, 0, 0);
     zhGrid->setHorizontalSpacing(8);
-    zhGrid->setVerticalSpacing(4);
+    zhGrid->setVerticalSpacing(3);
     zhGrid->setColumnMinimumWidth(0, kLabelColumnWidth);
     zhGrid->setColumnStretch(1, 1);
+    zhGrid->setRowStretch(2, 2);
+    zhGrid->setRowStretch(3, 1);
     m_appNameEdit = new QLineEdit(zhPage);
     m_appNameEdit->setPlaceholderText(QStringLiteral("应用中文名称"));
     m_shortDescEdit = new QLineEdit(zhPage);
@@ -256,11 +273,13 @@ void MetadataPanel::buildUi()
 
     auto *enPage = new QWidget(m_languageTabs);
     auto *enGrid = new QGridLayout(enPage);
-    enGrid->setContentsMargins(0, 6, 0, 0);
+    enGrid->setContentsMargins(0, 4, 0, 0);
     enGrid->setHorizontalSpacing(8);
-    enGrid->setVerticalSpacing(4);
+    enGrid->setVerticalSpacing(3);
     enGrid->setColumnMinimumWidth(0, kLabelColumnWidth);
     enGrid->setColumnStretch(1, 1);
+    enGrid->setRowStretch(2, 2);
+    enGrid->setRowStretch(3, 1);
     m_appNameEnEdit = new QLineEdit(enPage);
     m_appNameEnEdit->setPlaceholderText(QStringLiteral("English app name"));
     m_shortDescEnEdit = new QLineEdit(enPage);
@@ -285,7 +304,7 @@ void MetadataPanel::buildUi()
     m_languageTabs->addTab(enPage, QStringLiteral("English Copy"));
     formGrid->addWidget(m_languageTabs, 2, 0, 1, 4);
 
-    auto *regionHost = new QWidget(this);
+    auto *regionHost = new QWidget(editorHost);
     regionHost->setObjectName(QStringLiteral("InlineControls"));
     auto *regionRow = new QHBoxLayout(regionHost);
     regionRow->setContentsMargins(0, 0, 0, 0);
@@ -301,9 +320,9 @@ void MetadataPanel::buildUi()
     regionRow->addWidget(m_regionGlobal);
     regionRow->addStretch(1);
     regionRow->addWidget(m_replaceAssetsCheck);
-    layout->addLayout(formGrid);
+    editorLayout->addLayout(formGrid, 1);
 
-    auto *regionLine = new QWidget(this);
+    auto *regionLine = new QWidget(editorHost);
     auto *regionLineLayout = new QHBoxLayout(regionLine);
     regionLineLayout->setContentsMargins(0, 0, 0, 0);
     regionLineLayout->setSpacing(8);
@@ -311,7 +330,9 @@ void MetadataPanel::buildUi()
     regionCaption->setFixedWidth(kLabelColumnWidth);
     regionLineLayout->addWidget(regionCaption);
     regionLineLayout->addWidget(regionHost, 1);
-    layout->addWidget(regionLine);
+    editorLayout->addWidget(regionLine);
+    editorScroll->setWidget(editorHost);
+    layout->addWidget(editorScroll, 1);
 }
 
 void MetadataPanel::setCategories(const QJsonArray &categories)
@@ -459,6 +480,7 @@ void MetadataPanel::renderPackages()
         button->setCursor(Qt::PointingHandCursor);
         button->setMinimumHeight(30);
         button->setToolTip(path);
+        button->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(button, &QPushButton::clicked, this, [this, path]() {
             if (path.isEmpty()) {
                 return;
@@ -466,6 +488,20 @@ void MetadataPanel::renderPackages()
             m_selectedPackagePath = path;
             renderPackages();
             emit packageSelected(path);
+        });
+        connect(button, &QPushButton::customContextMenuRequested, this, [this, button, path](const QPoint &pos) {
+            if (path.isEmpty()) {
+                return;
+            }
+            QMenu menu(button);
+            QAction *editTargets = menu.addAction(QStringLiteral("调整适配范围"));
+            const QAction *selectedAction = menu.exec(button->mapToGlobal(pos));
+            if (selectedAction != editTargets) {
+                return;
+            }
+            m_selectedPackagePath = path;
+            emit packageSelected(path);
+            emit packageTargetEditRequested(path);
         });
         m_packageLayout->addWidget(button);
     }

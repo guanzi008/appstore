@@ -46,6 +46,7 @@ private:
     void renderSidebar();
     void appendLogs(const QJsonArray &logs);
     void selectPackage(const QString &packagePath);
+    void editPackageTargets(const QString &packagePath);
 
     QJsonObject normalizedGroup(QJsonObject group) const;
     QJsonObject currentGroupFromUi() const;
@@ -58,6 +59,7 @@ private:
     void loginByWechat();
     void logout();
     void syncStoreData();
+    void openPreferences();
     void preprocessAssets();
     void captureScreenshots();
     void chooseScreenshotFiles();
@@ -80,7 +82,6 @@ private:
     SidebarWidget *m_sidebar = nullptr;
     MetadataPanel *m_metadataPanel = nullptr;
     ScreenshotPanel *m_screenshotPanel = nullptr;
-    TargetMatrixPanel *m_targetPanel = nullptr;
     WorkflowBar *m_workflowBar = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_capabilityLabel = nullptr;

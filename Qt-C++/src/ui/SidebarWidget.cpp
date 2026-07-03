@@ -177,6 +177,7 @@ void SidebarWidget::buildUi()
     auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("偏好设置"), this);
     settingsButton->setObjectName(QStringLiteral("SidebarPlain"));
     settingsButton->setCursor(Qt::PointingHandCursor);
+    connect(settingsButton, &QPushButton::clicked, this, &SidebarWidget::settingsRequested);
     layout->addWidget(settingsButton);
     layout->addStretch(1);
 

@@ -988,7 +988,7 @@ def _group_with_auto_matched_online_defaults(
     return _merge_auto_matched_online_group(group, online_group)
 
 
-def _group_to_json(package_group, *, login_context, capability_cache, asset_dir: Path | None) -> dict:
+def _group_to_json(package_group, *, login_context, capability_cache, asset_dir: Path | None, preferences: UIPreferences | None = None) -> dict:
     icon_path, screenshot_paths = detect_asset_candidates(package_group, asset_dir=asset_dir)
     asset_warnings: list[str] = []
     package_icon_paths: dict[str, Path] = {}
@@ -1016,7 +1016,11 @@ def _group_to_json(package_group, *, login_context, capability_cache, asset_dir:
     targets = ()
     if capability_cache is not None:
         try:
-            targets = build_target_options(capability_cache, package_group=package_group)
+            targets = build_target_options(
+                capability_cache,
+                package_group=package_group,
+                default_target_system_lines=(preferences.default_target_system_lines if preferences is not None else None),
+            )
         except Exception:
             targets = ()
     arch_codes = package_group_store_arch_codes(package_group)
@@ -1176,7 +1180,29 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
         "remember_credentials": preferences.remember_credentials,
         "remembered_username": preferences.remembered_username,
         "remembered_password": preferences.remembered_password,
+        "default_target_system_lines": {
+            str(key): list(values)
+            for key, values in preferences.default_target_system_lines.items()
+        },
     }
+
+
+def _normalize_default_target_system_lines(raw) -> dict[str, tuple[str, ...]]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, tuple[str, ...]] = {}
+    for raw_key, raw_values in raw.items():
+        key = str(raw_key).strip().lower()
+        if not key or not isinstance(raw_values, list):
+            continue
+        codes: list[str] = []
+        for value in raw_values:
+            code = str(value).strip()
+            if code and code not in codes:
+                codes.append(code)
+        if codes:
+            result[key] = tuple(codes)
+    return result
 
 
 def _payload_package_path_identity(path_value: str) -> str:
@@ -1558,6 +1584,7 @@ def command_login_credentials(payload: dict) -> dict:
         remember_credentials=remember_credentials,
         remembered_username=username if remember_credentials else "",
         remembered_password=password if remember_credentials else "",
+        default_target_system_lines=current_preferences.default_target_system_lines,
     )
     preference_store.save(preferences)
     return {
@@ -1706,6 +1733,9 @@ def command_save_preferences(payload: dict) -> dict:
         remember_credentials=_coerce_bool(preferences_payload.get("remember_credentials", False)),
         remembered_username=str(preferences_payload.get("remembered_username", "") or ""),
         remembered_password=str(preferences_payload.get("remembered_password", "") or ""),
+        default_target_system_lines=_normalize_default_target_system_lines(
+            preferences_payload.get("default_target_system_lines", {})
+        ),
     )
     path = PreferenceStore().save(preferences)
     return {
@@ -1724,6 +1754,7 @@ def command_analyze(payload: dict) -> dict:
 
     login_context = try_restore_cached_login(preferred_account)
     capability_cache = _load_capabilities(login_context)
+    preferences = PreferenceStore().load()
     package_group = analyze_package_group([Path(path).expanduser().resolve() for path in package_paths])
     group_items = [
         _group_to_json(
@@ -1731,6 +1762,7 @@ def command_analyze(payload: dict) -> dict:
             login_context=login_context,
             capability_cache=capability_cache,
             asset_dir=asset_dir,
+            preferences=preferences,
         )
     ]
     return {
