@@ -120,12 +120,6 @@ void apply(QWidget *root)
             font-weight: 650;
             padding: 3px 8px;
         }
-        QLabel#SidebarSection {
-            color: rgba(244, 249, 255, 190);
-            font-size: 14px;
-            font-weight: 760;
-            padding-top: 8px;
-        }
         QFrame#TaskCard, QFrame#UserCard {
             background: %8;
             border: 1px solid %9;
@@ -155,7 +149,7 @@ void apply(QWidget *root)
             font-size: 13px;
             font-weight: 720;
         }
-        QPushButton#SidebarPlain:hover {
+        QPushButton#SidebarPlain:hover, QPushButton#SidebarPlain:checked {
             background: rgba(255, 255, 255, 24);
         }
         QLabel#Avatar {
@@ -222,11 +216,6 @@ void apply(QWidget *root)
             border: 2px dashed %18;
             border-radius: 12px;
         }
-        QLabel#DropHint {
-            color: %13;
-            font-size: 13px;
-            font-weight: 900;
-        }
         QFrame#Card, QFrame#WorkflowBar {
             background: %19;
             border: 1px solid %15;
@@ -261,10 +250,25 @@ void apply(QWidget *root)
             font-size: 11px;
             font-weight: 900;
         }
-        QTabWidget#LanguageTabs::pane {
+        QTabWidget#WorkspaceTabs::pane, QTabWidget#LanguageTabs::pane {
             border: 0;
             background: transparent;
             margin-top: 2px;
+        }
+        QTabWidget#WorkspaceTabs > QTabBar::tab {
+            background: %21;
+            color: %20;
+            border: 1px solid %15;
+            border-radius: 8px;
+            padding: 8px 16px;
+            margin: 0 6px 6px 0;
+            font-size: 12px;
+            font-weight: 800;
+        }
+        QTabWidget#WorkspaceTabs > QTabBar::tab:selected {
+            background: %5;
+            color: white;
+            border-color: %5;
         }
         QTabWidget#LanguageTabs QTabBar::tab {
             background: %21;
@@ -449,14 +453,19 @@ void apply(QWidget *root)
             font-size: 13px;
             font-weight: 900;
         }
-        QFrame#WorkflowBar QPushButton#PrimaryAction {
+        QFrame#WorkflowBar QPushButton#PrimaryAction, QFrame#DropZone QPushButton#PrimaryAction {
             background: %5;
             color: white;
             border: 1px solid %5;
             border-radius: 9px;
-            padding: 0px 18px;
+            padding: 7px 18px;
             font-size: 12px;
             font-weight: 900;
+        }
+        QFrame#WorkflowBar QPushButton#PrimaryAction:disabled {
+            background: %21;
+            color: %14;
+            border-color: %15;
         }
     )");
     const QStringList values = {

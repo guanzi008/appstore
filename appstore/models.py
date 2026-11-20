@@ -78,6 +78,7 @@ class StoreAdaptOption:
     code: str
     label: str
     remark: str = ""
+    system_line_codes: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

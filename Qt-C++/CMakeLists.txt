@@ -80,6 +80,7 @@ add_executable(utpublisher-qt-cpp
     src/ui/ScreenshotPanel.cpp
     src/ui/SidebarWidget.cpp
     src/ui/TargetMatrixPanel.cpp
+    src/ui/VersionPicker.cpp
     src/ui/WorkflowBar.cpp
 )
 
@@ -241,6 +242,7 @@ endif()
 foreach(requirements_file
         "${APPSTORE_PROJECT_ROOT}/requirements.txt"
         "${APPSTORE_PROJECT_ROOT}/appstore/requirements.txt"
+        "${APPSTORE_PROJECT_ROOT}/appstore/requirements-browser.txt"
         "${APPSTORE_PROJECT_ROOT}/ui/requirements.txt")
     if(EXISTS "${requirements_file}")
         file(RELATIVE_PATH relative_requirements_path "${APPSTORE_PROJECT_ROOT}" "${requirements_file}")

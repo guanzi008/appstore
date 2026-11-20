@@ -1,6 +1,8 @@
 #include "ui/MetadataPanel.h"
 
 #include "core/AppJson.h"
+#include "ui/ImagePreview.h"
+#include "ui/TargetMatrixPanel.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,7 +13,6 @@
 #include <QLayoutItem>
 #include <QMenu>
 #include <QAction>
-#include <QPixmap>
 #include <QPoint>
 #include <QPushButton>
 #include <QScrollArea>
@@ -134,13 +135,9 @@ void MetadataPanel::buildUi()
     layout->setContentsMargins(12, 10, 12, 10);
     layout->setSpacing(5);
 
-    auto *title = new QLabel(QStringLiteral("应用资料与包列表（自动填充）"), this);
-    title->setObjectName(QStringLiteral("CardTitle"));
-    layout->addWidget(title);
-
     auto *summaryRow = new QHBoxLayout();
     summaryRow->setSpacing(12);
-    m_iconLabel = new QLabel(QStringLiteral("APP"), this);
+    m_iconLabel = new ImagePreview(QStringLiteral("APP"), this);
     m_iconLabel->setObjectName(QStringLiteral("PackageIcon"));
     m_iconLabel->setAlignment(Qt::AlignCenter);
     m_iconLabel->setFixedSize(50, 50);
@@ -170,9 +167,19 @@ void MetadataPanel::buildUi()
     auto *packageHeader = new QHBoxLayout();
     packageHeader->setContentsMargins(0, 0, 0, 0);
     packageHeader->addWidget(makeCaption(QStringLiteral("包列表"), this));
-    auto *packageHint = new QLabel(QStringLiteral("点击包显示素材，右键包可调整适配范围"), this);
-    packageHint->setObjectName(QStringLiteral("MutedText"));
-    packageHeader->addWidget(packageHint, 1);
+    m_systemLineSummary = new QLabel(this);
+    m_systemLineSummary->setObjectName(QStringLiteral("MutedText"));
+    m_systemLineSummary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_systemLineSummary->setTextFormat(Qt::PlainText);
+    packageHeader->addWidget(m_systemLineSummary, 1);
+    m_systemLineButton = new QPushButton(QStringLiteral("调整系统线"), this);
+    m_systemLineButton->setCursor(Qt::PointingHandCursor);
+    connect(m_systemLineButton, &QPushButton::clicked, this, [this]() {
+        if (!m_selectedPackagePath.isEmpty()) {
+            emit packageTargetEditRequested(m_selectedPackagePath);
+        }
+    });
+    packageHeader->addWidget(m_systemLineButton);
     layout->addLayout(packageHeader);
 
     m_packageScroll = new QScrollArea(this);
@@ -510,6 +517,11 @@ void MetadataPanel::renderPackages()
 
 void MetadataPanel::updateSummary()
 {
+    const QStringList systemLines = TargetMatrixPanel::selectedSystemLines(m_group, m_selectedPackagePath);
+    m_systemLineSummary->setText(systemLines.isEmpty() ? QStringLiteral("未选择系统线")
+                                                       : QStringLiteral("已选 %1 条系统线").arg(systemLines.size()));
+    m_systemLineSummary->setToolTip(systemLines.join(QLatin1Char('\n')));
+    m_systemLineButton->setEnabled(!m_selectedPackagePath.isEmpty());
     const QJsonObject package = packageForPath(m_group, m_selectedPackagePath);
     const QString packageName = package.value(QStringLiteral("pkg_name")).toString().trimmed();
     const QString packageVersion = package.value(QStringLiteral("version")).toString().trimmed();
@@ -528,14 +540,7 @@ void MetadataPanel::updateSummary()
     if (iconPath.isEmpty()) {
         iconPath = m_group.value(QStringLiteral("icon_path")).toString().trimmed();
     }
-    const QPixmap icon(iconPath);
-    if (!icon.isNull()) {
-        m_iconLabel->setPixmap(icon.scaled(m_iconLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        m_iconLabel->setText({});
-    } else {
-        m_iconLabel->setPixmap({});
-        m_iconLabel->setText(QStringLiteral("APP"));
-    }
+    m_iconLabel->setImagePath(iconPath, QStringLiteral("APP"));
 }
 
 QLabel *MetadataPanel::makeCaption(const QString &text, QWidget *parent)

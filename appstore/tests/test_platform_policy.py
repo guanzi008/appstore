@@ -27,7 +27,7 @@ class PlatformPolicyTests(unittest.TestCase):
 
         self.assertEqual(decide_execution_mode(release=release, cli_mode="browser"), "api")
 
-    def test_loong64_target_is_promoted_to_v25(self) -> None:
+    def test_loong64_target_preserves_the_requested_system_line(self) -> None:
         package = PackageRecord(
             row_id=3,
             app_key="labelnova",
@@ -49,5 +49,5 @@ class PlatformPolicyTests(unittest.TestCase):
 
         resolved = resolve_target_system_line(package=package, target=target)
 
-        self.assertEqual(resolved.sup_sys_code, "21")
+        self.assertEqual(resolved.sup_sys_code, "11")
         self.assertEqual(resolved.baseline_id, "2300")

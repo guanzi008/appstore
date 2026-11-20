@@ -26,7 +26,7 @@ inputs:
     required: false
     default: ""
   mode:
-    description: Submission mode passed to upload_batch.
+    description: Submission mode passed to upload_batch. Browser mode requires a graphical runner.
     required: false
     default: api
   rows:
@@ -70,9 +70,9 @@ inputs:
     required: false
     default: direct-update
   headless:
-    description: Use headless browser mode when mode=browser.
+    description: Deprecated. Browser submissions require a visible browser in a desktop session.
     required: false
-    default: "true"
+    default: "false"
   install-system-packages:
     description: Install Linux command-line tools needed by package inspectors.
     required: false
@@ -99,13 +99,19 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg
+        sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg openssl
 
     - name: Install 应用投递助手 Python dependencies
       shell: bash
+      env:
+        NEED_BROWSER: ${{ inputs.test-only != 'true' && (inputs.mode == 'browser' || inputs.workbook != '') }}
       run: |
         python -m pip install --upgrade pip
-        python -m pip install -r "$GITHUB_ACTION_PATH/appstore/requirements.txt"
+        dependencies=(-r "$GITHUB_ACTION_PATH/appstore/requirements.txt")
+        if [[ "$NEED_BROWSER" == "true" ]]; then
+          dependencies+=(-r "$GITHUB_ACTION_PATH/appstore/requirements-browser.txt")
+        fi
+        python -m pip install "${dependencies[@]}"
 
     - name: Submit app update
       id: submit
@@ -134,11 +140,14 @@ runs:
 
         export PYTHONPATH="$GITHUB_ACTION_PATH${PYTHONPATH:+:$PYTHONPATH}"
 
+        if [[ "$INPUT_HEADLESS" == "true" && "$INPUT_TEST_ONLY" != "true" ]]; then
+          echo "The headless input has been retired. Use API mode or a graphical runner for browser mode." >&2
+          exit 2
+        fi
+
         if [[ "$INPUT_SYNC_CAPABILITIES" == "true" || "$INPUT_TEST_ONLY" == "true" ]]; then
           python -m appstore.upload_batch sync-capabilities \
-            --cache-dir "$INPUT_CAPABILITIES_CACHE" \
-            --username "$APPSTORE_USERNAME" \
-            --password "$APPSTORE_PASSWORD"
+            --cache-dir "$INPUT_CAPABILITIES_CACHE"
         fi
 
         if [[ "$INPUT_TEST_ONLY" == "true" ]]; then
@@ -148,20 +157,12 @@ runs:
           exit 0
         fi
 
-        headless_arg=("--headless")
-        if [[ "$INPUT_HEADLESS" == "false" ]]; then
-          headless_arg=("--no-headless")
-        fi
-
         if [[ -n "$INPUT_WORKBOOK" ]]; then
           cmd=(
             python -m appstore.upload_batch upload "$INPUT_WORKBOOK"
             --output-dir "$INPUT_OUTPUT_DIR"
             --capabilities-cache "$INPUT_CAPABILITIES_CACHE"
-            --username "$APPSTORE_USERNAME"
-            --password "$APPSTORE_PASSWORD"
             --mode "$INPUT_MODE"
-            "${headless_arg[@]}"
           )
           if [[ -n "$INPUT_ROWS" ]]; then
             cmd+=(--rows "$INPUT_ROWS")
@@ -184,11 +185,8 @@ runs:
             "${packages[@]}"
             --output-dir "$INPUT_OUTPUT_DIR"
             --capabilities-cache "$INPUT_CAPABILITIES_CACHE"
-            --username "$APPSTORE_USERNAME"
-            --password "$APPSTORE_PASSWORD"
             --mode "$INPUT_MODE"
             --release-key "$INPUT_RELEASE_KEY"
-            "${headless_arg[@]}"
           )
           if [[ -n "$INPUT_APP_ID" ]]; then
             cmd+=(--app-id "$INPUT_APP_ID")

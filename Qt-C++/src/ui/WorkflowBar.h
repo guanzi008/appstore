@@ -4,6 +4,7 @@
 
 class QLabel;
 class QPushButton;
+class QResizeEvent;
 
 class WorkflowBar final : public QFrame
 {
@@ -32,15 +33,21 @@ public:
     void setStepStates(StepState parse, StepState capture, StepState wait, StepState submit);
     void setStatusText(const QString &text);
     void setBusy(bool busy);
+    void setPublishControlsVisible(bool visible);
 
 signals:
     void submitRequested();
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
 private:
+    void updateStatusLabel();
     void updateStepLabel(QLabel *label, const QString &title, StepState state);
     static QString statePrefix(StepState state);
     static QString stateProperty(StepState state);
 
+    QWidget *m_steps = nullptr;
     QLabel *m_parseStepLabel = nullptr;
     QLabel *m_captureStepLabel = nullptr;
     QLabel *m_waitStepLabel = nullptr;

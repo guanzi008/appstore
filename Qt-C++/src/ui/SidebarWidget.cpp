@@ -135,7 +135,7 @@ void SidebarWidget::buildUi()
     brandRow->addWidget(brandTitle, 1);
     layout->addLayout(brandRow);
 
-    auto *myAppsButton = new QPushButton(style()->standardIcon(QStyle::SP_DirOpenIcon), QStringLiteral("📁 我的应用"), this);
+    auto *myAppsButton = new QPushButton(style()->standardIcon(QStyle::SP_DirOpenIcon), QStringLiteral("我的应用"), this);
     myAppsButton->setObjectName(QStringLiteral("SidebarPrimary"));
     myAppsButton->setCursor(Qt::PointingHandCursor);
     connect(myAppsButton, &QPushButton::clicked, this, &SidebarWidget::refreshMyAppsRequested);
@@ -155,9 +155,10 @@ void SidebarWidget::buildUi()
     appsScroll->setWidget(appsContainer);
     layout->addWidget(appsScroll, 1);
 
-    auto *queueTitle = new QLabel(QStringLiteral("任务队列"), this);
-    queueTitle->setObjectName(QStringLiteral("SidebarSection"));
-    layout->addWidget(queueTitle);
+    auto *taskButton = new QPushButton(QStringLiteral("任务状态"), this);
+    taskButton->setObjectName(QStringLiteral("SidebarPlain"));
+    taskButton->setCheckable(true);
+    layout->addWidget(taskButton);
 
     auto *taskCard = new QFrame(this);
     taskCard->setObjectName(QStringLiteral("TaskCard"));
@@ -173,13 +174,14 @@ void SidebarWidget::buildUi()
     taskLayout->addWidget(m_captureTaskLabel);
     taskLayout->addWidget(m_submitTaskLabel);
     layout->addWidget(taskCard);
+    taskCard->hide();
+    connect(taskButton, &QPushButton::toggled, taskCard, &QFrame::setVisible);
 
     auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("偏好设置"), this);
     settingsButton->setObjectName(QStringLiteral("SidebarPlain"));
     settingsButton->setCursor(Qt::PointingHandCursor);
     connect(settingsButton, &QPushButton::clicked, this, &SidebarWidget::settingsRequested);
     layout->addWidget(settingsButton);
-    layout->addStretch(1);
 
     auto *userCard = new QFrame(this);
     userCard->setObjectName(QStringLiteral("UserCard"));

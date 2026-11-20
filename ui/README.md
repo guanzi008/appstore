@@ -39,7 +39,7 @@ python3 -m venv .venv
 
 ## 说明
 
-- “微信扫码登录”会沿真实网页登录链路自动提取微信二维码，只展示二维码本身；扫码并在手机上确认后，会自动把 session 保存到 `appstore/cache/session-state/`。
+- “微信扫码登录”通过 HTTPS 获取二维码。手机确认后，工具验证商店会话并保存到 `appstore/cache/session-state/`。
 - 应用启动时会优先检查上次缓存的 session 是否仍然有效；有效则直接恢复登录态并刷新校验时间，失效才需要重新登录。
 - 我对过当前商店接口返回结构，应用详情里的多语言字段实际是 `app_lan_infos`，默认语言是 `default_lan=zh_CN`；当前批量分组页已经按这个结构拆成中文/英文两组输入。
 - 分类会在登录后通过 `/store-dev-app/category` 实时加载；如果拉取失败，仍可回退到手动输入分类 ID。

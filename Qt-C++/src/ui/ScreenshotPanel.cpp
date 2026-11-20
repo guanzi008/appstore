@@ -1,16 +1,17 @@
 #include "ui/ScreenshotPanel.h"
 
 #include "core/AppJson.h"
+#include "ui/ImagePreview.h"
 
 #include <QFont>
 #include <QHBoxLayout>
-#include <QImage>
+#include <QImageIOHandler>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QPushButton>
 #include <QSize>
 #include <QSizePolicy>
@@ -20,11 +21,17 @@
 
 namespace {
 
+constexpr int kThumbnailHeight = 30;
+
 QString screenshotLabel(const QString &path, int index)
 {
-    const QImage image(path);
-    if (!image.isNull()) {
-        return QStringLiteral("%1  %2x%3").arg(index + 1).arg(image.width()).arg(image.height());
+    QImageReader reader(path);
+    QSize size = reader.size();
+    if (!size.isEmpty()) {
+        if (reader.transformation().testFlag(QImageIOHandler::TransformationRotate90)) {
+            size.transpose();
+        }
+        return QStringLiteral("%1  %2x%3").arg(index + 1).arg(size.width()).arg(size.height());
     }
     return QStringLiteral("%1  无效").arg(index + 1);
 }
@@ -47,7 +54,7 @@ void ScreenshotPanel::buildUi()
 
     auto *titleRow = new QHBoxLayout();
     titleRow->setSpacing(8);
-    m_iconLabel = new QLabel(QStringLiteral("APP"), this);
+    m_iconLabel = new ImagePreview(QStringLiteral("APP"), this);
     m_iconLabel->setObjectName(QStringLiteral("PackageIconSmall"));
     m_iconLabel->setAlignment(Qt::AlignCenter);
     m_iconLabel->setFixedSize(34, 34);
@@ -56,13 +63,20 @@ void ScreenshotPanel::buildUi()
     auto *titleColumn = new QVBoxLayout();
     titleColumn->setContentsMargins(0, 0, 0, 0);
     titleColumn->setSpacing(2);
-    auto *title = new QLabel(QStringLiteral("截图工坊（3:2 / 9:16 规格预检）"), this);
+    auto *title = new QLabel(QStringLiteral("当前安装包"), this);
     title->setObjectName(QStringLiteral("CardTitle"));
     m_packageLabel = new QLabel(QStringLiteral("未选择包"), this);
     m_packageLabel->setObjectName(QStringLiteral("MutedText"));
+    m_packageLabel->setTextFormat(Qt::PlainText);
+    m_packageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     titleColumn->addWidget(title);
     titleColumn->addWidget(m_packageLabel);
     titleRow->addLayout(titleColumn, 1);
+    auto *iconButton = new QPushButton(QStringLiteral("更换图标"), this);
+    iconButton->setCursor(Qt::PointingHandCursor);
+    iconButton->setMinimumHeight(30);
+    connect(iconButton, &QPushButton::clicked, this, &ScreenshotPanel::chooseIconRequested);
+    titleRow->addWidget(iconButton);
     layout->addLayout(titleRow);
 
     auto *buttonRow = new QHBoxLayout();
@@ -91,19 +105,20 @@ void ScreenshotPanel::buildUi()
     });
     layout->addLayout(buttonRow);
 
-    m_previewLabel = new QLabel(QStringLiteral("等待截图"), this);
+    m_previewLabel = new ImagePreview(QStringLiteral("等待截图"), this);
     m_previewLabel->setObjectName(QStringLiteral("ScreenshotPreview"));
     m_previewLabel->setAlignment(Qt::AlignCenter);
     m_previewLabel->setMinimumWidth(320);
-    m_previewLabel->setFixedHeight(146);
-    layout->addWidget(m_previewLabel);
+    m_previewLabel->setMinimumHeight(220);
+    m_previewLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    layout->addWidget(m_previewLabel, 1);
 
     m_thumbScroll = new QScrollArea(this);
     m_thumbScroll->setObjectName(QStringLiteral("FlatScroll"));
     m_thumbScroll->setWidgetResizable(true);
     m_thumbScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_thumbScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_thumbScroll->setFixedHeight(34);
+    m_thumbScroll->setFixedHeight(kThumbnailHeight + m_thumbScroll->horizontalScrollBar()->sizeHint().height());
     auto *thumbHost = new QWidget(m_thumbScroll);
     m_thumbLayout = new QHBoxLayout();
     m_thumbLayout->setContentsMargins(0, 0, 0, 0);
@@ -143,16 +158,13 @@ void ScreenshotPanel::setGroup(const QJsonObject &group)
         QStringLiteral("selected_package_label"),
         AppJson::stringValue(group, QStringLiteral("pkg_name"), QStringLiteral("未选择包")));
     m_packageLabel->setText(packageLabel);
-    const QString iconPath = group.value(QStringLiteral("selected_package_icon_path")).toString(
-        group.value(QStringLiteral("icon_path")).toString());
-    const QPixmap icon(iconPath);
-    if (!icon.isNull()) {
-        m_iconLabel->setPixmap(icon.scaled(m_iconLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        m_iconLabel->setText({});
-    } else {
-        m_iconLabel->setPixmap({});
-        m_iconLabel->setText(QStringLiteral("APP"));
+    m_packageLabel->setToolTip(packageLabel);
+    m_iconLabel->setImagePath(group.value(QStringLiteral("icon_path")).toString().trimmed(), QStringLiteral("APP"));
+    QStringList warnings;
+    for (const QJsonValue &value : group.value(QStringLiteral("asset_warnings")).toArray()) {
+        warnings.append(value.toString());
     }
+    m_metaLabel->setToolTip(warnings.join(QLatin1Char('\n')));
 
     m_screenshotPaths.clear();
     const QJsonArray screenshots = group.value(QStringLiteral("screenshot_paths")).toArray();
@@ -175,6 +187,7 @@ void ScreenshotPanel::renderScreenshotList()
 {
     while (QLayoutItem *item = m_thumbLayout->takeAt(0)) {
         if (QWidget *widget = item->widget()) {
+            widget->hide();
             widget->deleteLater();
         }
         delete item;
@@ -194,10 +207,10 @@ void ScreenshotPanel::renderScreenshotList()
         auto *button = new QPushButton(screenshotLabel(m_screenshotPaths.at(index), index), this);
         button->setProperty("class", QStringLiteral("ScreenshotThumb"));
         button->setCheckable(true);
+        button->setAutoExclusive(true);
         button->setChecked(index == m_selectedIndex);
         button->setCursor(Qt::PointingHandCursor);
-        button->setMinimumHeight(28);
-        button->setMaximumWidth(118);
+        button->setFixedHeight(kThumbnailHeight);
         button->setToolTip(m_screenshotPaths.at(index));
         connect(button, &QPushButton::clicked, this, [this, index]() {
             selectScreenshot(index);
@@ -213,31 +226,24 @@ void ScreenshotPanel::selectScreenshot(int index)
         return;
     }
     m_selectedIndex = index;
-    renderScreenshotList();
     updatePreview();
 }
 
 void ScreenshotPanel::updatePreview()
 {
-    const QString screenshotPath = (m_selectedIndex >= 0 && m_selectedIndex < m_screenshotPaths.size())
-        ? m_screenshotPaths.at(m_selectedIndex)
-        : QString();
-    const QPixmap pixmap(screenshotPath);
-    if (!screenshotPath.isEmpty() && !pixmap.isNull()) {
-        m_previewLabel->setPixmap(pixmap.scaled(m_previewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        m_previewLabel->setText({});
-        const QImage image(screenshotPath);
+    const bool hasSelection = m_selectedIndex >= 0 && m_selectedIndex < m_screenshotPaths.size();
+    const QString screenshotPath = hasSelection ? m_screenshotPaths.at(m_selectedIndex) : QString();
+    const QSize imageSize = m_previewLabel->setImagePath(
+        screenshotPath, hasSelection ? QStringLiteral("无法预览这张截图") : QStringLiteral("等待截图"));
+    m_removeButton->setEnabled(hasSelection);
+    if (!imageSize.isEmpty()) {
         m_metaLabel->setText(QStringLiteral("第 %1 张：%2x%3（共 %4 张）")
                                  .arg(m_selectedIndex + 1)
-                                 .arg(image.width())
-                                 .arg(image.height())
+                                 .arg(imageSize.width())
+                                 .arg(imageSize.height())
                                  .arg(m_screenshotPaths.size()));
-        m_removeButton->setEnabled(true);
         return;
     }
 
-    m_previewLabel->setPixmap({});
-    m_previewLabel->setText(QStringLiteral("等待截图"));
     m_metaLabel->setText(m_screenshotPaths.isEmpty() ? QStringLiteral("未检测到有效截图") : QStringLiteral("所选截图无效"));
-    m_removeButton->setEnabled(false);
 }

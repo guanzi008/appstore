@@ -88,7 +88,13 @@ class ChromiumMirrorTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"UTPUBLISHER_CHROMIUM_EXECUTABLE": "/opt/chromium"}, clear=False):
             with patch.object(pyppeteer_runtime, "_pyppeteer_launch", side_effect=fake_launch):
-                asyncio.run(pyppeteer_runtime.launch(headless=True))
+                asyncio.run(pyppeteer_runtime.launch())
 
         self.assertEqual(captured["executablePath"], "/opt/chromium")
-        self.assertTrue(captured["headless"])
+        self.assertFalse(captured["headless"])
+
+    def test_headless_request_never_starts_chromium(self) -> None:
+        with patch.object(pyppeteer_runtime, "_pyppeteer_launch") as browser:
+            with self.assertRaisesRegex(RuntimeError, "可见浏览器"):
+                asyncio.run(pyppeteer_runtime.launch(headless=True))
+        browser.assert_not_called()

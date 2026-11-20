@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from datetime import datetime
 
@@ -8,7 +7,7 @@ import requests
 
 from appstore.models import AppRecord, DebPackageInfo, ReleaseRecord, UploadedFileRef
 from appstore.platforms import resolve_store_arch, resolve_store_platform
-from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
+from appstore.store_login import BASE, ORIGIN, AuthenticationError, login_store_cookies
 from appstore.update_payload import (
     baseline_id_objects,
     baseline_system_id_objects,
@@ -19,8 +18,6 @@ from appstore.update_payload import (
     normalize_website_for_submit,
 )
 
-ORIGIN = "https://appstore-dev.uniontech.com"
-BASE = f"{ORIGIN}/devprod-api"
 REQUEST_TIMEOUT = 120
 UPLOAD_PUT_TIMEOUT = 900
 UPLOAD_PUT_ATTEMPTS = 3
@@ -31,10 +28,6 @@ class AppLookupAmbiguousError(RuntimeError):
 
 
 class PayloadBuildError(ValueError):
-    pass
-
-
-class AuthenticationError(RuntimeError):
     pass
 
 
@@ -533,60 +526,16 @@ class AppStoreClient:
             raise RuntimeError(f"{action} failed: {payload}")
         return payload
 
-    async def _login_and_export_state(self, username: str, password: str) -> tuple[list[dict], dict, dict]:
-        browser = await launch(headless=True, **PYPPETEER_LAUNCH_OPTIONS)
+    def login(self, username: str, password: str) -> dict:
+        cookies = login_store_cookies(username, password)
+        session = build_requests_session(cookies=cookies)
         try:
-            page = await browser.newPage()
-            await page.goto(f"{ORIGIN}/#/index", {"waitUntil": "networkidle2", "timeout": 120000})
-            await page.waitForSelector('input[type="text"]', {"timeout": 120000})
-            inputs = await page.querySelectorAll("input")
-            if len(inputs) < 2:
-                raise AuthenticationError("login page did not expose username/password inputs")
-            await inputs[0].type(username, {"delay": 30})
-            await inputs[1].type(password, {"delay": 30})
-            await page.click("button")
-            await page.waitForNavigation({"waitUntil": "networkidle2", "timeout": 120000})
-            cookies = await page.cookies()
-            for _ in range(15):
-                if _pick_auth_cookie(cookies):
-                    break
-                await asyncio.sleep(1)
-                cookies = await page.cookies()
-            local_storage = await page.evaluate(
-                """() => {
-                  const out = {};
-                  for (let i = 0; i < localStorage.length; i += 1) {
-                    const key = localStorage.key(i);
-                    out[key] = localStorage.getItem(key);
-                  }
-                  return out;
-                }"""
-            )
-            session_storage = await page.evaluate(
-                """() => {
-                  const out = {};
-                  for (let i = 0; i < sessionStorage.length; i += 1) {
-                    const key = sessionStorage.key(i);
-                    out[key] = sessionStorage.getItem(key);
-                  }
-                  return out;
-                }"""
-            )
-            return cookies, local_storage, session_storage
-        finally:
-            await browser.close()
-
-    def login(self, username: str, password: str) -> None:
-        cookies, local_storage, session_storage = asyncio.run(self._login_and_export_state(username, password))
-        self.session = build_requests_session(
-            cookies=cookies,
-            local_storage=local_storage,
-            session_storage=session_storage,
-        )
-        try:
-            self._ensure_ok(self.session.get(f"{BASE}/store-dev-auth/dev_info", timeout=REQUEST_TIMEOUT), "dev_info")
-        except Exception as exc:
-            raise AuthenticationError("authentication verification failed") from exc
+            profile = AppStoreClient(session).fetch_dev_info()
+        except Exception:
+            session.close()
+            raise AuthenticationError("商店未能验证登录会话。") from None
+        self.session = session
+        return profile
 
     def fetch_linglong_system_lines(self) -> list[dict]:
         payload = self._ensure_ok(

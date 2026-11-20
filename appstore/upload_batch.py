@@ -30,7 +30,8 @@ from appstore.deb import read_deb_package_info
 from appstore.manifest import load_manifest
 from appstore.models import AppRecord, DebPackageInfo, LoadedManifest, PackageRecord, ReleaseRecord, RowResult, TargetRecord, UploadedFileRef
 from appstore.platform_policy import decide_execution_mode
-from appstore.submission import ARCH_CODE_MAP, PKG_TYPE_MAP, submit_grouped_release, validate_release_group
+from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
+from appstore.submission import PKG_TYPE_MAP, submit_grouped_release, validate_release_group
 from appstore.update_payload import normalize_origin_pkg
 
 
@@ -76,8 +77,9 @@ def _package_upload_filename(package: PackageRecord, package_info: DebPackageInf
 
 def _resolve_arch_code_label(arch: str) -> tuple[str, str]:
     try:
-        return ARCH_CODE_MAP[arch.strip().lower()]
-    except KeyError as exc:
+        option = resolve_store_arch(arch)
+        return option.code, option.label
+    except PlatformMappingError as exc:
         raise RuntimeError(f"unsupported architecture: {arch}") from exc
 
 
@@ -464,11 +466,8 @@ def _build_direct_release(
 
 
 def _origin_pkg_arch_matches_existing(origin_pkg: dict, package_info: DebPackageInfo) -> bool:
-    arch_code, arch_label = _resolve_arch_code_label(package_info.pkg_arch)
-    normalized_label = arch_label.strip().lower()
-    pkg_arch_code = str(origin_pkg.get("pkg_arch", "")).strip()
-    pkg_arch_label = str(origin_pkg.get("pkgArch", "")).strip().lower()
-    return pkg_arch_code == arch_code or pkg_arch_label == normalized_label
+    raw_arch = origin_pkg.get("pkg_arch") or origin_pkg.get("pkgArch") or ""
+    return normalize_package_arch(str(raw_arch)) == normalize_package_arch(package_info.pkg_arch)
 
 
 def _select_existing_pkg_for_direct_update(
@@ -1801,7 +1800,7 @@ def build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("--mode", choices=("auto", "api", "browser"), default="auto")
     upload_parser.add_argument("--session-cache-dir", default="appstore/cache/session-state")
     upload_parser.add_argument("--artifact-dir", default="")
-    upload_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    upload_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help=argparse.SUPPRESS)
 
     upload_packages_parser = subparsers.add_parser("upload-packages")
     upload_packages_parser.add_argument("packages", nargs="+")
@@ -1812,7 +1811,7 @@ def build_parser() -> argparse.ArgumentParser:
     upload_packages_parser.add_argument("--mode", choices=("auto", "api", "browser"), default="api")
     upload_packages_parser.add_argument("--session-cache-dir", default="appstore/cache/session-state")
     upload_packages_parser.add_argument("--artifact-dir", default="")
-    upload_packages_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    upload_packages_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help=argparse.SUPPRESS)
     upload_packages_parser.add_argument("--app-id", default="")
     upload_packages_parser.add_argument("--note", default="")
     upload_packages_parser.add_argument("--release-key", default="direct-update")
@@ -1877,7 +1876,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto_upload_packages_parser.add_argument("--mode", choices=("auto", "api", "browser"), default="api")
     auto_upload_packages_parser.add_argument("--session-cache-dir", default="appstore/cache/session-state")
     auto_upload_packages_parser.add_argument("--artifact-dir", default="")
-    auto_upload_packages_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    auto_upload_packages_parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help=argparse.SUPPRESS)
     auto_upload_packages_parser.add_argument("--app-id", default="")
     auto_upload_packages_parser.add_argument("--note", default="")
     auto_upload_packages_parser.add_argument("--release-key", default="direct-update")
@@ -2169,7 +2168,10 @@ def run_batch(
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "headless", False):
+        parser.error("--headless has been retired. Use API mode or run browser mode in a desktop session.")
     if args.command == "sync-capabilities":
         return _run_sync_capabilities(args)
     if args.command == "validate":

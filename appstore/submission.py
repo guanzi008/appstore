@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from appstore.appstore_client import AppStoreClient
-from appstore.capabilities import CapabilityCache
+from appstore.capabilities import CapabilityCache, system_lines_for_arch
 from appstore.models import AppRecord, PackageInfo, PackageRecord, ReleaseRecord, TargetRecord, UploadedFileRef
+from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
 from appstore.update_payload import (
     baseline_ids_from_value,
     baseline_id_objects,
@@ -24,14 +25,6 @@ from appstore.update_payload import (
 class ValidationError(RuntimeError):
     pass
 
-
-ARCH_CODE_MAP = {
-    "amd64": ("4", "X86"),
-    "x86_64": ("4", "X86"),
-    "arm64": ("3", "ARM"),
-    "loong64": ("6", "loong"),
-    "sw64": ("8", "sw64"),
-}
 
 PKG_TYPE_MAP = {
     ("deb", "deb"): 11,
@@ -120,16 +113,9 @@ def _append_unique_baseline_entry(sequence: list[dict], system_code: str, baseli
 
 
 def _origin_pkg_arch_matches(origin_pkg: dict, package_info: PackageInfo) -> bool:
-    expected_code, expected_label = _resolve_store_arch(package_info.pkg_arch)
-    candidates = {
-        str(package_info.pkg_arch or "").strip().lower(),
-        expected_code.lower(),
-        expected_label.lower(),
-    }
     normalized = normalize_origin_pkg(origin_pkg)
-    raw_arch = str(normalized.get("pkg_arch", "") or "").strip().lower()
-    raw_label = str(normalized.get("pkgArch", "") or "").strip().lower()
-    return raw_arch in candidates or raw_label in candidates
+    raw_arch = normalized.get("pkg_arch") or normalized.get("pkgArch") or ""
+    return normalize_package_arch(raw_arch) == normalize_package_arch(package_info.pkg_arch)
 
 
 def _find_existing_origin_pkg(
@@ -211,10 +197,10 @@ def _upload_time_label() -> str:
 
 
 def _resolve_store_arch(arch: str) -> tuple[str, str]:
-    normalized = arch.strip().lower()
     try:
-        return ARCH_CODE_MAP[normalized]
-    except KeyError as exc:
+        option = resolve_store_arch(arch)
+        return option.code, option.label
+    except PlatformMappingError as exc:
         raise ValidationError(f"unsupported architecture: {arch}") from exc
 
 
@@ -279,8 +265,12 @@ def validate_release_group(
         targets = targets_by_package.get(package.package_key, ())
         if not targets:
             raise ValidationError(f"package has no targets: {package.package_key}")
+        allowed_lines = system_lines_for_arch(capability_cache, package_family, inspected_arch_code)
         for target in targets:
             _assert_target_supported(package_family, target, capability_cache)
+            if package.file_path.parts[:1] != ("online",) and target.sup_sys_code not in allowed_lines:
+                label = system_lines[target.sup_sys_code].label
+                raise ValidationError(f"{package.file_path.name}（{package_info.pkg_arch}）当前不支持系统线 {label}。")
             collision_key = (inspected_arch_code, target.sup_sys_code, package_info.pkg_version)
             if collision_key in seen_arch_system_version:
                 raise ValidationError("same architecture/system/version collision in release")

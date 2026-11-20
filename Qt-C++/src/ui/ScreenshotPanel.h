@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QStringList>
 
+class ImagePreview;
 class QHBoxLayout;
 class QLabel;
 class QPushButton;
@@ -20,6 +21,7 @@ public:
     void setGroup(const QJsonObject &group);
 
 signals:
+    void chooseIconRequested();
     void addFilesRequested();
     void pasteRequested();
     void placeholderRequested();
@@ -33,9 +35,9 @@ private:
     void selectScreenshot(int index);
     void updatePreview();
 
-    QLabel *m_iconLabel = nullptr;
+    ImagePreview *m_iconLabel = nullptr;
     QLabel *m_packageLabel = nullptr;
-    QLabel *m_previewLabel = nullptr;
+    ImagePreview *m_previewLabel = nullptr;
     QLabel *m_metaLabel = nullptr;
     QScrollArea *m_thumbScroll = nullptr;
     QHBoxLayout *m_thumbLayout = nullptr;

@@ -9,6 +9,7 @@ from appstore.models import (
     PackageInfo,
     PackageRecord,
     ReleaseRecord,
+    StoreAdaptOption,
     SystemLine,
     TargetRecord,
     UploadedFileRef,
@@ -805,6 +806,21 @@ class GroupedSubmissionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValidationError, "unsupported system line"):
             validate_release_group(app, release, packages, targets, inspected, _cache())
+
+    def test_validate_release_filters_system_lines_by_package_architecture(self) -> None:
+        path = Path("/tmp/demo-loongarch64.deb")
+        package = PackageRecord(20, "demo", "stable", "pkg-a", "deb", "deb", path, declared_arch="loongarch64")
+        inspected = {"pkg-a": PackageInfo("demo", "1.0.0", "loongarch64", 1, "hash1", path)}
+        cache = replace(_cache(), arch_options={
+            "5": StoreAdaptOption("5", "loongarch64", system_line_codes=("21",)),
+            "6": StoreAdaptOption("6", "loong64", system_line_codes=("11",)),
+        })
+        target = TargetRecord(30, "demo", "stable", "pkg-a", "11")
+        with self.assertRaisesRegex(ValidationError, "loongarch64.*不支持系统线"):
+            validate_release_group(_app(), _release(), (package,), {"pkg-a": (target,)}, inspected, cache)
+        supported = replace(target, sup_sys_code="21")
+        result = validate_release_group(_app(), _release(), (package,), {"pkg-a": (supported,)}, inspected, cache)
+        self.assertEqual(result.packages[0].targets, (supported,))
 
     def test_validate_release_group_rejects_invalid_family_format_combination(self) -> None:
         app = _app()

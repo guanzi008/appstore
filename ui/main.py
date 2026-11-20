@@ -56,7 +56,6 @@ from ui.qt_compat import (
     QtGui,
     QtWidgets,
 )
-from ui.wechat_qr_login import WechatQrLoginDialog
 
 
 @dataclass(frozen=True)
@@ -1132,6 +1131,8 @@ class MainWindow(QtWidgets.QMainWindow):
             remember_credentials=self.preferences.remember_credentials,
             remembered_username=self.preferences.remembered_username,
             remembered_password=self.preferences.remembered_password,
+            default_target_system_lines=self.preferences.default_target_system_lines,
+            default_target_ranges=self.preferences.default_target_ranges,
         )
         self.preference_store.save(self.preferences)
         current_category = category_id or self._combo_text(self.category_combo) or "1"
@@ -1319,7 +1320,7 @@ class MainWindow(QtWidgets.QMainWindow):
             entry.package_group,
             asset_dir=(Path(config.asset_dir).expanduser().resolve() if config.asset_dir.strip() else self._current_asset_dir()),
             manual_icon_path=None,
-            manual_screenshot_paths=tuple(Path(path).expanduser().resolve() for path in config.manual_screenshot_paths),
+            manual_screenshot_paths=tuple(Path(path).expanduser().resolve() for path in config.manual_screenshot_paths) or None,
             output_dir=output_dir,
             on_success=lambda bundle, g=group_key: self._on_batch_group_assets_ready(g, bundle),
         )
@@ -1583,6 +1584,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _handle_browser_login(self) -> None:
         label = self.session_label_edit.text().strip() or self.username_edit.text().strip() or "manual-login"
         try:
+            from ui.wechat_qr_login import WechatQrLoginDialog
+
             dialog = WechatQrLoginDialog(label, self)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "无法打开微信扫码登录", str(exc))
@@ -1595,6 +1598,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._run_worker(
             login_with_browser_state,
             state,
+            login_mode="wechat",
             on_success=self._on_login_success,
         )
 
@@ -2042,7 +2046,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analysis_state.package_group,
             asset_dir=self._current_asset_dir(),
             manual_icon_path=self._current_manual_icon(),
-            manual_screenshot_paths=self._current_manual_screenshots(),
+            manual_screenshot_paths=self._current_manual_screenshots() or None,
             output_dir=self._current_output_dir() / "preprocessed",
             on_success=on_success or self._on_assets_ready,
         )
@@ -2135,7 +2139,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     full_desc_en=config.full_desc_en,
                     note_en=config.note_en,
                     auto_translate_en=config.auto_translate_en,
-                    manual_screenshot_paths=tuple(Path(path).expanduser().resolve() for path in config.manual_screenshot_paths),
+                    manual_screenshot_paths=tuple(Path(path).expanduser().resolve() for path in config.manual_screenshot_paths) or None,
                     prepared_icon_path=(Path(config.prepared_icon_path).expanduser().resolve() if config.prepared_icon_path.strip() else None),
                     prepared_screenshot_paths=tuple(
                         Path(path).expanduser().resolve() for path in config.prepared_screenshot_paths

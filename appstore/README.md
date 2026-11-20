@@ -8,6 +8,8 @@ Install dependencies with:
 python3 -m pip install -r appstore/requirements.txt
 ```
 
+Install OpenSSL for password sign-in and API uploads. For browser-backed uploads, also install the packages in `appstore/requirements-browser.txt`.
+
 Generate the example workbook and example files with:
 
 ```bash
@@ -33,7 +35,7 @@ The workbook has four sheets:
 - `api`: use the API-driven submission path; if the app already exists, the tool now fetches app detail first and reuses the existing icon, screenshots, category, and localized texts
 - `browser`: use the browser-backed fallback path with staged page saves
 
-The browser flow remains useful, but it is now the fallback mode. The recommended default is `api`, because it models the real UnionTech portal request flow directly and only falls back to browser automation when a specific UI-only step is still unresolved.
+Use `api` for automated publishing. Select `browser` explicitly for a workflow that needs the portal UI. Browser mode opens a visible window in a desktop session.
 
 Grouped CLI commands:
 
@@ -48,7 +50,6 @@ Grouped CLI commands:
 - `--mode auto|api|browser`
 - `--session-cache-dir appstore/cache/session-state`
 - `--artifact-dir <dir>`
-- `--headless` / `--no-headless`
 
 Row selection is grouped-aware. Plain integer selectors refer to package rows by default. Use `r:<row_id>` to replay an empty-release failure row when a release has no package rows.
 

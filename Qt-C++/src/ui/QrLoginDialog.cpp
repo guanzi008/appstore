@@ -56,7 +56,7 @@ void QrLoginDialog::buildUi()
     title->setAlignment(Qt::AlignCenter);
     layout->addWidget(title);
 
-    auto *hint = new QLabel(QStringLiteral("二维码来自真实网页登录链路，扫码确认后自动保存 Cookie 会话。"), this);
+    auto *hint = new QLabel(QStringLiteral("扫码后，请在手机微信中确认登录。"), this);
     hint->setObjectName(QStringLiteral("MutedText"));
     hint->setAlignment(Qt::AlignCenter);
     hint->setWordWrap(true);
@@ -147,6 +147,7 @@ void QrLoginDialog::cleanupProcess()
 void QrLoginDialog::cancelProcess()
 {
     if (m_process != nullptr && m_process->state() != QProcess::NotRunning) {
+        m_process->disconnect(this);
         m_process->kill();
         m_process->waitForFinished(1000);
     }

@@ -18,6 +18,12 @@ DEFAULT_PREFERENCES_PATH = _preferences_path_from_env()
 
 
 @dataclass(frozen=True)
+class DefaultTargetRange:
+    baseline_id: str = ""
+    unsupported_baseline_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class UIPreferences:
     recent_category_ids: tuple[str, ...] = ("1",)
     recent_regions: tuple[str, ...] = ("1",)
@@ -30,6 +36,13 @@ class UIPreferences:
     remembered_username: str = ""
     remembered_password: str = ""
     default_target_system_lines: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    default_target_ranges: dict[str, dict[str, DefaultTargetRange]] = field(default_factory=dict)
+
+    def target_ranges(self, package_family: str, arch: str) -> dict[str, DefaultTargetRange]:
+        scope = f"{package_family}:{arch}"
+        if scope in self.default_target_ranges:
+            return self.default_target_ranges[scope]
+        return {code: DefaultTargetRange() for code in self.default_target_system_lines.get(arch, ())}
 
 
 class PreferenceStore:
@@ -57,6 +70,7 @@ class PreferenceStore:
             remembered_username=str(payload.get("remembered_username", "") or ""),
             remembered_password=str(payload.get("remembered_password", "") or ""),
             default_target_system_lines=_normalize_system_line_defaults(payload.get("default_target_system_lines")),
+            default_target_ranges=normalize_default_target_ranges(payload.get("default_target_ranges")),
         )
 
     def save(self, preferences: UIPreferences) -> Path:
@@ -111,4 +125,26 @@ def _normalize_system_line_defaults(raw) -> dict[str, tuple[str, ...]]:
                 codes.append(code)
         if codes:
             result[arch] = tuple(codes)
+    return result
+
+
+def normalize_default_target_ranges(raw: object) -> dict[str, dict[str, DefaultTargetRange]]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, DefaultTargetRange]] = {}
+    for key, targets in raw.items():
+        family, _, arch = str(key).strip().lower().partition(":")
+        if family not in {"deb", "linglong"} or not arch or not isinstance(targets, dict):
+            continue
+        ranges: dict[str, DefaultTargetRange] = {}
+        for key, target in targets.items():
+            code = str(key).strip()
+            if not code or not isinstance(target, dict):
+                continue
+            excluded = target.get("unsupported_baseline_ids")
+            ranges[code] = DefaultTargetRange(
+                baseline_id=str(target.get("baseline_id") or "").strip(),
+                unsupported_baseline_ids=tuple(dict.fromkeys(_normalize_items(excluded, default=()))),
+            )
+        result[f"{family}:{arch}"] = ranges
     return result

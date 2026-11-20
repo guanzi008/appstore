@@ -15,7 +15,12 @@ from appstore.chromium_mirrors import (
 
 configure_pyppeteer_download_environment()
 
-from pyppeteer import launch as _pyppeteer_launch  # noqa: E402
+try:
+    from pyppeteer import launch as _pyppeteer_launch
+except ModuleNotFoundError as exc:
+    if exc.name != "pyppeteer":
+        raise
+    raise RuntimeError("可见浏览器功能需要安装 appstore/requirements-browser.txt 中的依赖。") from None
 
 
 SYSTEM_CHROMIUM_ARCHES = {"aarch64", "arm64", "loong64", "loongarch64"}
@@ -81,6 +86,9 @@ async def launch(options: dict[str, Any] | None = None, **kwargs: Any):
     if options:
         merged.update(options)
     merged.update(kwargs)
+    if merged.get("headless"):
+        raise RuntimeError("网页提交使用可见浏览器。自动化发布请使用 API 模式。")
+    merged["headless"] = False
     if not merged.get("executablePath"):
         executable_path = _browser_executable_path()
         if executable_path:

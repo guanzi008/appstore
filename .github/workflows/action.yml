@@ -29,17 +29,18 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             appstore/requirements.txt
+            appstore/requirements-browser.txt
             ui/requirements.txt
 
       - name: Install system tools used by package inspectors
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg
+          sudo apt-get install -y --no-install-recommends dpkg-dev file ffmpeg openssl
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt -r appstore/requirements-browser.txt
 
       - name: Run unit tests
         run: python -m unittest discover -s appstore/tests -v

@@ -39,11 +39,17 @@ from ui.backend import (
     SystemTargetOption,
     try_restore_cached_login,
     build_target_options,
+    default_target_ranges,
     package_group_store_arch_codes,
+    preference_baseline_selectable,
+    preference_arch_key,
+    store_arch_code,
 )
 from appstore.appstore_client import package_family_from_app_detail, package_format_from_app_detail
+from appstore.capabilities import system_lines_for_arch
+from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
-from ui.preferences import PreferenceStore, UIPreferences
+from ui.preferences import PreferenceStore, UIPreferences, normalize_default_target_ranges
 from appstore.session_state import SessionStateStore
 
 
@@ -89,6 +95,30 @@ def _capability_cache_to_json(cache) -> dict:
             "cpu_clip_option_count": 0,
             "motherboard_option_count": 0,
         }
+    default_options = {}
+    for family in ("deb", "linglong"):
+        package_options = {}
+        for arch in ARCHITECTURES.values():
+            lines = system_lines_for_arch(cache, family, arch.code)
+            if not lines:
+                continue
+            package_options[preference_arch_key(arch.manifest_value)] = [
+                {
+                    "code": code,
+                    "label": line.label,
+                    "baseline_options": [
+                        {
+                            "id": option.baseline_id,
+                            "version": option.minor_version,
+                            "selectable": preference_baseline_selectable(family, code, option.minor_version),
+                        }
+                        for option in reversed(cache.baseline_options.get(f"{family}:{code}", ()))
+                    ],
+                }
+                for code, line in lines.items()
+            ]
+        if package_options:
+            default_options[family] = package_options
     return {
         "loaded": True,
         "generated_at": cache.generated_at,
@@ -98,6 +128,7 @@ def _capability_cache_to_json(cache) -> dict:
         "arch_option_count": len(cache.arch_options),
         "cpu_clip_option_count": len(cache.cpu_clip_options),
         "motherboard_option_count": len(cache.motherboard_options),
+        "default_system_line_options": default_options,
     }
 
 
@@ -410,7 +441,7 @@ def _display_arch_from_origin_pkg(capability_cache, origin_pkg: dict) -> tuple[s
             "aarch64": "arm64",
             "loong": "loong64",
             "loong64": "loong64",
-            "loongarch64": "loong64",
+            "loongarch64": "loongarch64",
             "sw64": "sw64",
             "sw_64": "sw64",
         }.get(raw_label.strip().lower(), raw_label)
@@ -475,28 +506,28 @@ def _size_text_from_origin_pkg(origin_pkg: dict) -> str:
     return f"{int(size)}B"
 
 
-def _origin_pkg_system_codes(origin_pkg: dict, fit_info: dict) -> tuple[str, ...]:
-    return _dedupe(
-        _code_items(origin_pkg.get("system_platform"))
-        or _code_items(origin_pkg.get("supSys"))
-        or _code_items(fit_info.get("system_platform"))
-    )
+def _origin_pkg_selection(origin_pkg: dict, fit_info: dict, field: str, legacy_field: str):
+    for key in (field, legacy_field):
+        if origin_pkg.get(key) is not None:
+            return origin_pkg[key]
+    return fit_info.get(field)
 
 
-def _origin_pkg_baseline_ids(origin_pkg: dict, fit_info: dict) -> tuple[str, ...]:
-    return _dedupe(
-        _code_items(origin_pkg.get("baseline"))
-        or _code_items(origin_pkg.get("supBlineVer"))
-        or _code_items(fit_info.get("baseline"))
-    )
-
-
-def _origin_pkg_unsupported_baseline_ids(origin_pkg: dict, fit_info: dict) -> tuple[str, ...]:
-    return _dedupe(
-        _code_items(origin_pkg.get("unsupportBaseline"))
-        or _code_items(origin_pkg.get("unsupportBlineVers"))
-        or _code_items(fit_info.get("unsupportBaseline"))
-    )
+def _versions_for_line(value, code: str, known_ids: set[str], only_selected_line: bool) -> tuple[str, ...]:
+    entries = value if isinstance(value, list) else _code_items(value)
+    result: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            line = _origin_pkg_value(entry, "system_platform", "systemPlatform")
+            if line and line != code:
+                continue
+            baseline_id = _origin_pkg_value(entry, "id", "baseline_id", "baselineId", "code")
+            ids = (baseline_id,) if baseline_id else ()
+        else:
+            line = ""
+            ids = _code_items(entry)
+        result.extend(baseline_id for baseline_id in ids if line or only_selected_line or baseline_id in known_ids)
+    return _dedupe(result)
 
 
 def _online_packages_from_detail(
@@ -544,47 +575,39 @@ def _target_rows_for_selection(
     package_path: str,
     package_label: str,
     arch_label: str,
+    arch_code: str = "",
     selected_system_codes: tuple[str, ...],
-    selected_baseline_ids: tuple[str, ...],
-    selected_unsupported_baseline_ids: tuple[str, ...],
+    selected_baselines,
+    selected_unsupported_baselines,
 ) -> list[dict]:
-    if capability_cache is None:
-        return []
     selected_system_code_set = set(selected_system_codes)
-    selected_baseline_id_set = set(selected_baseline_ids)
-    selected_unsupported_baseline_id_set = set(selected_unsupported_baseline_ids)
-    system_lines = capability_cache.linglong_system_lines if package_family == "linglong" else capability_cache.deb_system_lines
+    system_lines = {}
+    if capability_cache is not None:
+        system_lines = system_lines_for_arch(capability_cache, package_family, arch_code or store_arch_code(arch_label))
+    family_lines = system_lines_for_arch(capability_cache, package_family, "") if capability_cache is not None else {}
     targets: list[dict] = []
-    for code, system_line in system_lines.items():
-        normalized_code = str(code).strip()
-        if not normalized_code or normalized_code == "0":
+    for code in _dedupe([*system_lines, *selected_system_codes]):
+        if code == "0":
             continue
-        baseline_options = capability_cache.baseline_options.get(f"{package_family}:{normalized_code}", ())
-        allowed_selected = tuple(
-            option.baseline_id
-            for option in baseline_options
-            if option.baseline_id in selected_baseline_id_set
-        )
-        # The web form allows selecting a system line without selecting a
-        # concrete baseline version. Preserve that state instead of
-        # inventing the latest baseline, otherwise "社区版V23" becomes "23.3".
-        effective_baselines = allowed_selected
+        system_line = family_lines.get(code)
+        baseline_options = capability_cache.baseline_options.get(f"{package_family}:{code}", ()) if capability_cache is not None else ()
+        selected = code in selected_system_code_set
+        known_ids = {option.baseline_id for option in baseline_options}
+        only_selected_line = selected and len(selected_system_code_set) == 1
+        effective_baselines = _versions_for_line(selected_baselines, code, known_ids, only_selected_line) if selected else ()
+        unsupported_baselines = _versions_for_line(selected_unsupported_baselines, code, known_ids, only_selected_line) if selected else ()
         targets.append(
             {
                 "package_path": package_path,
                 "package_label": package_label,
-                "package_arch": arch_label,
-                "code": normalized_code,
-                "label": system_line.label,
+                "package_arch": normalize_package_arch(arch_code or arch_label),
+                "code": code,
+                "label": system_line.label if system_line is not None else f"系统线 {code}",
                 "package_family": package_family,
-                "selected": normalized_code in selected_system_code_set,
+                "selected": selected,
                 "baseline_id": effective_baselines[0] if effective_baselines else "",
                 "selected_baseline_ids": list(effective_baselines),
-                "unsupported_baseline_ids": [
-                    option.baseline_id
-                    for option in baseline_options
-                    if option.baseline_id in selected_unsupported_baseline_id_set
-                ],
+                "unsupported_baseline_ids": list(unsupported_baselines),
                 "baseline_options": [
                     {
                         "id": option.baseline_id,
@@ -608,11 +631,12 @@ def _online_targets_from_detail(
     packages: list[dict],
 ) -> list[dict]:
     fit_info = detail_data.get("app_fit_info") or {}
-    origin_pkgs = detail_data.get("app_origin_pkgs") if isinstance(detail_data.get("app_origin_pkgs"), list) else []
+    raw_packages = detail_data.get("app_origin_pkgs")
+    origin_pkgs = [pkg for pkg in raw_packages if isinstance(pkg, dict)] if isinstance(raw_packages, list) else []
     if packages and origin_pkgs:
         targets: list[dict] = []
         for index, package in enumerate(packages):
-            origin_pkg = origin_pkgs[index] if index < len(origin_pkgs) and isinstance(origin_pkgs[index], dict) else {}
+            origin_pkg = origin_pkgs[index] if index < len(origin_pkgs) else {}
             targets.extend(
                 _target_rows_for_selection(
                     capability_cache,
@@ -620,9 +644,10 @@ def _online_targets_from_detail(
                     package_path=str(package.get("path", "")).strip(),
                     package_label=str(package.get("file_name", "") or package_label).strip(),
                     arch_label=str(package.get("arch", "")).strip(),
-                    selected_system_codes=_origin_pkg_system_codes(origin_pkg, fit_info),
-                    selected_baseline_ids=_origin_pkg_baseline_ids(origin_pkg, fit_info),
-                    selected_unsupported_baseline_ids=_origin_pkg_unsupported_baseline_ids(origin_pkg, fit_info),
+                    arch_code=str(package.get("arch_code", "")).strip(),
+                    selected_system_codes=_code_items(_origin_pkg_selection(origin_pkg, fit_info, "system_platform", "supSys")),
+                    selected_baselines=_origin_pkg_selection(origin_pkg, fit_info, "baseline", "supBlineVer"),
+                    selected_unsupported_baselines=_origin_pkg_selection(origin_pkg, fit_info, "unsupportBaseline", "unsupportBlineVers"),
                 )
             )
         return targets
@@ -634,8 +659,8 @@ def _online_targets_from_detail(
         package_label=package_label,
         arch_label=arch_label,
         selected_system_codes=_code_items(fit_info.get("system_platform")),
-        selected_baseline_ids=_code_items(fit_info.get("baseline")),
-        selected_unsupported_baseline_ids=_code_items(fit_info.get("unsupportBaseline")),
+        selected_baselines=fit_info.get("baseline"),
+        selected_unsupported_baselines=fit_info.get("unsupportBaseline"),
     )
 
 
@@ -739,27 +764,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
 
 
 def _normalized_arch_key(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return ""
-    aliases = {
-        "x86_64": "x86",
-        "amd64": "x86",
-        "x64": "x86",
-        "x86": "x86",
-        "i386": "x86",
-        "i686": "x86",
-        "aarch64": "arm64",
-        "arm": "arm64",
-        "arm64": "arm64",
-        "armv8": "arm64",
-        "loongarch64": "loong64",
-        "loong64": "loong64",
-        "loong": "loong64",
-        "sw_64": "sw64",
-        "sw64": "sw64",
-    }
-    return aliases.get(text, text)
+    return normalize_package_arch(str(value or ""))
 
 
 def _dedupe_json_strings(values: list[object]) -> list[str]:
@@ -780,18 +785,15 @@ def _remap_target_to_package(target: dict, package: dict) -> dict:
 
 
 def _dedupe_target_rows(targets: list[dict]) -> list[dict]:
-    result: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    result: dict[tuple[str, str], dict] = {}
     for target in targets:
         key = (
             str(target.get("package_path", "")).strip(),
             str(target.get("code", "")).strip(),
         )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(target)
-    return result
+        if key not in result or (target.get("selected") and not result[key].get("selected")):
+            result[key] = target
+    return list(result.values())
 
 
 def _packages_with_online_remainder(base_group: dict, online_group: dict) -> list[dict]:
@@ -804,7 +806,7 @@ def _packages_with_online_remainder(base_group: dict, online_group: dict) -> lis
     for online_package in online_group.get("packages", []) or []:
         if not isinstance(online_package, dict):
             continue
-        online_arch_key = _normalized_arch_key(online_package.get("arch"))
+        online_arch_key = _normalized_arch_key(online_package.get("arch_code") or online_package.get("arch"))
         if online_arch_key and online_arch_key in local_arch_keys:
             continue
         packages.append(dict(online_package))
@@ -827,14 +829,15 @@ def _targets_for_auto_matched_packages(base_group: dict, online_group: dict, pac
         package_path = str(package.get("path", "")).strip()
         if not package_path:
             continue
-        package_arch = str(package.get("arch", "")).strip()
-        package_arch_key = _normalized_arch_key(package_arch)
-
+        fallback = [target for target in base_targets if str(target.get("package_path", "")).strip() == package_path]
         if package_path in local_paths:
+            package_arch_key = _normalized_arch_key(package.get("arch"))
+            available_codes = {target.get("code") for target in fallback}
             matched_targets = [
                 target
                 for target in online_targets
-                if not package_arch_key or _normalized_arch_key(target.get("package_arch")) == package_arch_key
+                if package_arch_key and _normalized_arch_key(target.get("package_arch")) == package_arch_key
+                and (not available_codes or target.get("code") in available_codes)
             ]
         else:
             matched_targets = [
@@ -842,22 +845,10 @@ def _targets_for_auto_matched_packages(base_group: dict, online_group: dict, pac
                 for target in online_targets
                 if str(target.get("package_path", "")).strip() == package_path
             ]
-            if not matched_targets:
-                matched_targets = [
-                    target
-                    for target in online_targets
-                    if package_arch_key and _normalized_arch_key(target.get("package_arch")) == package_arch_key
-                ]
-
-        if not matched_targets and len(local_paths) == 1 and package_path in local_paths and len(packages) == 1:
-            matched_targets = online_targets
         if matched_targets:
-            for target in matched_targets:
-                remapped_targets.append(_remap_target_to_package(target, package))
-            continue
-
-        fallback = [target for target in base_targets if str(target.get("package_path", "")).strip() == package_path]
-        remapped_targets.extend(fallback)
+            remapped_targets.extend(_remap_target_to_package(target, package) for target in matched_targets)
+        else:
+            remapped_targets.extend(fallback)
 
     if not remapped_targets:
         return base_targets
@@ -938,6 +929,7 @@ def _group_with_auto_matched_online_defaults(
     matches: tuple[StoreAppMatch, ...],
     login_context,
     capability_cache,
+    preferred_app_id: str = "",
 ) -> dict:
     if login_context is None or not matches:
         return group
@@ -946,6 +938,8 @@ def _group_with_auto_matched_online_defaults(
     match_warnings: list[str] = []
 
     for match in matches:
+        if preferred_app_id and match.app_id != preferred_app_id:
+            continue
         if not match.detail_id:
             continue
         if target_family and getattr(match, "package_family", "") and match.package_family != target_family:
@@ -988,7 +982,10 @@ def _group_with_auto_matched_online_defaults(
     return _merge_auto_matched_online_group(group, online_group)
 
 
-def _group_to_json(package_group, *, login_context, capability_cache, asset_dir: Path | None, preferences: UIPreferences | None = None) -> dict:
+def _group_to_json(
+    package_group, *, login_context, capability_cache, asset_dir: Path | None,
+    preferences: UIPreferences | None = None, preferred_app_id: str = "",
+) -> dict:
     icon_path, screenshot_paths = detect_asset_candidates(package_group, asset_dir=asset_dir)
     asset_warnings: list[str] = []
     package_icon_paths: dict[str, Path] = {}
@@ -1019,7 +1016,7 @@ def _group_to_json(package_group, *, login_context, capability_cache, asset_dir:
             targets = build_target_options(
                 capability_cache,
                 package_group=package_group,
-                default_target_system_lines=(preferences.default_target_system_lines if preferences is not None else None),
+                preferences=preferences,
             )
         except Exception:
             targets = ()
@@ -1075,6 +1072,7 @@ def _group_to_json(package_group, *, login_context, capability_cache, asset_dir:
         matches=tuple(matches),
         login_context=login_context,
         capability_cache=capability_cache,
+        preferred_app_id=preferred_app_id,
     )
 
 
@@ -1184,6 +1182,16 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
             str(key): list(values)
             for key, values in preferences.default_target_system_lines.items()
         },
+        "default_target_ranges": {
+            scope: {
+                code: {
+                    "baseline_id": target.baseline_id,
+                    "unsupported_baseline_ids": list(target.unsupported_baseline_ids),
+                }
+                for code, target in targets.items()
+            }
+            for scope, targets in preferences.default_target_ranges.items()
+        },
     }
 
 
@@ -1239,15 +1247,7 @@ def _coerce_bool(value) -> bool:
 def _online_payload_pkg_arch(package_payload: dict) -> str:
     raw_label = str(package_payload.get("arch", "") or "").strip().lower()
     raw_code = str(package_payload.get("arch_code", "") or package_payload.get("pkg_arch", "") or "").strip()
-    if raw_label in {"x86", "x86_64", "amd64"} or raw_code == "4":
-        return "amd64"
-    if raw_label in {"arm", "arm64", "aarch64"} or raw_code == "3":
-        return "arm64"
-    if raw_label in {"loong", "loong64", "loongarch64"} or raw_code in {"5", "6"}:
-        return "loong64"
-    if raw_label in {"sw64", "sw_64"} or raw_code == "8":
-        return "sw64"
-    return raw_label or raw_code or "amd64"
+    return normalize_package_arch(raw_code or raw_label) or "amd64"
 
 
 def _online_package_group_from_payload(group_payload: dict) -> PackageGroup | None:
@@ -1406,6 +1406,17 @@ def _group_payload_selected_codes(group_payload: dict, code_key: str, option_key
     return None
 
 
+def _group_asset_paths(group_payload: dict) -> tuple[Path | None, tuple[Path, ...] | None]:
+    icon = str(group_payload.get("icon_path", "")).strip()
+    screenshots = group_payload.get("screenshot_paths")
+    return (
+        Path(icon).expanduser().resolve() if icon else None,
+        tuple(Path(path).expanduser().resolve() for path in screenshots if isinstance(path, str) and path.strip())
+        if isinstance(screenshots, list)
+        else None,
+    )
+
+
 def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPlan, tuple[SystemTargetOption, ...]]:
     package_group = _group_payload_to_package_group(group_payload)
     asset_dir_value = str(group_payload.get("asset_dir", "")).strip()
@@ -1415,6 +1426,8 @@ def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPla
         for value in group_payload.get("region_codes", [])
         if str(value).strip()
     ) or ("1",)
+    icon_path, screenshot_paths = _group_asset_paths(group_payload)
+    assets_preprocessed = group_payload.get("assets_preprocessed") is True
     plan = BatchGroupSubmissionPlan(
         package_group=package_group,
         submission_mode=str(group_payload.get("submission_mode", "auto")).strip() or "auto",
@@ -1434,14 +1447,10 @@ def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPla
         full_desc_en=str(group_payload.get("full_desc_en", "")).strip(),
         note_en=str(group_payload.get("note_en", "")).strip(),
         auto_translate_en=not bool(group_payload.get("manual_en_edited", False)),
-        prepared_icon_path=Path(str(group_payload.get("icon_path", "")).strip()).expanduser().resolve()
-        if str(group_payload.get("icon_path", "")).strip()
-        else None,
-        prepared_screenshot_paths=tuple(
-            Path(str(path)).expanduser().resolve()
-            for path in group_payload.get("screenshot_paths", [])
-            if str(path).strip()
-        ),
+        manual_icon_path=icon_path,
+        manual_screenshot_paths=screenshot_paths,
+        prepared_icon_path=icon_path if assets_preprocessed else None,
+        prepared_screenshot_paths=(screenshot_paths or ()) if assets_preprocessed else (),
         asset_warnings=tuple(str(value).strip() for value in group_payload.get("asset_warnings", []) if str(value).strip())
         if isinstance(group_payload.get("asset_warnings", []), list)
         else (),
@@ -1524,11 +1533,20 @@ def _group_asset_output_dir(group_payload: dict, stage: str) -> Path:
     return DEFAULT_OUTPUT_ROOT / "cpp" / "assets" / _safe_group_key(group_key) / stage
 
 
-def _update_group_assets(group_payload: dict, *, asset_dir: Path, icon_path: Path | None, screenshot_paths: tuple[Path, ...], warnings: list[str]) -> dict:
+def _update_group_assets(
+    group_payload: dict,
+    *,
+    asset_dir: Path,
+    icon_path: Path | None,
+    screenshot_paths: tuple[Path, ...],
+    warnings: list[str],
+    assets_preprocessed: bool = False,
+) -> dict:
     updated = dict(group_payload)
     updated["asset_dir"] = str(asset_dir)
-    updated["icon_path"] = str(icon_path) if icon_path is not None else str(group_payload.get("icon_path", "")).strip()
+    updated["icon_path"] = str(icon_path) if icon_path is not None else ""
     updated["screenshot_paths"] = [str(path) for path in screenshot_paths]
+    updated["assets_preprocessed"] = assets_preprocessed
     updated["asset_warnings"] = warnings
     return updated
 
@@ -1585,6 +1603,7 @@ def command_login_credentials(payload: dict) -> dict:
         remembered_username=username if remember_credentials else "",
         remembered_password=password if remember_credentials else "",
         default_target_system_lines=current_preferences.default_target_system_lines,
+        default_target_ranges=current_preferences.default_target_ranges,
     )
     preference_store.save(preferences)
     return {
@@ -1604,7 +1623,7 @@ def command_login_wechat_qr_stream(payload: dict) -> dict:
         print(json.dumps(event, ensure_ascii=False), flush=True)
 
     state = run_wechat_qr_login(account_label, event_callback=emit_event)
-    login_context = login_with_browser_state(state)
+    login_context = login_with_browser_state(state, login_mode="wechat")
     capability_cache = _load_capabilities(login_context)
     return {
         "canceled": False,
@@ -1637,6 +1656,40 @@ def command_logout(payload: dict) -> dict:
     }
 
 
+def _refresh_group_system_lines(group: dict, cache, preferences: UIPreferences) -> list[dict]:
+    targets = [row for row in group.get("targets", []) if isinstance(row, dict)]
+    refreshed: list[dict] = []
+    for package in group.get("packages", []):
+        if not isinstance(package, dict):
+            continue
+        path = str(package.get("path", "")).strip()
+        arch = str(package.get("arch", "")).strip()
+        family = str(package.get("family") or group.get("package_family") or "").strip()
+        previous = {row["code"]: row for row in targets if row.get("package_path") == path and row.get("code")}
+        selected = tuple(code for code, row in previous.items() if row.get("selected"))
+        defaults = {}
+        if not previous and not package.get("online"):
+            defaults = default_target_ranges(cache, family, arch, preferences)
+            selected = tuple(defaults)
+        rows = _target_rows_for_selection(
+            cache, package_family=family, package_path=path, package_label=str(package.get("file_name", "")),
+            arch_label=arch, arch_code=str(package.get("arch_code", "")), selected_system_codes=selected,
+            selected_baselines=(), selected_unsupported_baselines=(),
+        )
+        for row in rows:
+            old = previous.get(row["code"], {})
+            for key in ("baseline_id", "selected_baseline_ids", "unsupported_baseline_ids"):
+                if key in old:
+                    row[key] = old[key]
+            default = defaults.get(row["code"])
+            if default is not None:
+                row["baseline_id"] = default.baseline_id
+                row["selected_baseline_ids"] = [default.baseline_id] if default.baseline_id else []
+                row["unsupported_baseline_ids"] = list(default.unsupported_baseline_ids)
+        refreshed.extend(rows)
+    return refreshed
+
+
 def command_sync_store_data(payload: dict) -> dict:
     preferred_account = str(payload.get("preferred_account", "")).strip()
     logs: list[str] = []
@@ -1645,12 +1698,17 @@ def command_sync_store_data(payload: dict) -> dict:
         raise RuntimeError("未找到可用登录态，请先登录。")
     capability_cache = sync_capabilities(login_context.client, log=logs.append)
     categories = [_category_to_json(option) for option in fetch_category_options(login_context.client, log=logs.append)]
-    return {
+    result = {
         "login": _login_to_json(login_context),
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": categories,
         "logs": logs,
     }
+    group = payload.get("group")
+    if isinstance(group, dict) and group.get("key"):
+        result["group_key"] = group["key"]
+        result["targets"] = _refresh_group_system_lines(group, capability_cache, PreferenceStore().load())
+    return result
 
 
 def command_list_my_apps(payload: dict) -> dict:
@@ -1714,6 +1772,12 @@ def command_save_preferences(payload: dict) -> dict:
     preferences_payload = payload.get("preferences", {})
     if not isinstance(preferences_payload, dict):
         raise ValueError("preferences must be an object")
+    preference_store = PreferenceStore()
+    default_ranges = (
+        normalize_default_target_ranges(preferences_payload["default_target_ranges"])
+        if "default_target_ranges" in preferences_payload
+        else preference_store.load().default_target_ranges
+    )
     preferences = UIPreferences(
         recent_category_ids=tuple(
             str(value).strip()
@@ -1736,8 +1800,9 @@ def command_save_preferences(payload: dict) -> dict:
         default_target_system_lines=_normalize_default_target_system_lines(
             preferences_payload.get("default_target_system_lines", {})
         ),
+        default_target_ranges=default_ranges,
     )
-    path = PreferenceStore().save(preferences)
+    path = preference_store.save(preferences)
     return {
         "path": str(path),
         "preferences": _preferences_to_json(preferences),
@@ -1751,6 +1816,7 @@ def command_analyze(payload: dict) -> dict:
     asset_dir_value = str(payload.get("asset_dir", "")).strip()
     asset_dir = Path(asset_dir_value).expanduser().resolve() if asset_dir_value else None
     preferred_account = str(payload.get("preferred_account", "")).strip()
+    preferred_app_id = str(payload.get("preferred_app_id", "")).strip()
 
     login_context = try_restore_cached_login(preferred_account)
     capability_cache = _load_capabilities(login_context)
@@ -1763,6 +1829,7 @@ def command_analyze(payload: dict) -> dict:
             capability_cache=capability_cache,
             asset_dir=asset_dir,
             preferences=preferences,
+            preferred_app_id=preferred_app_id,
         )
     ]
     return {
@@ -1803,13 +1870,7 @@ def command_preprocess_assets(payload: dict) -> dict:
     asset_dir = Path(asset_dir_value).expanduser().resolve() if asset_dir_value else None
     logs: list[str] = []
     output_dir = _group_asset_output_dir(group_payload, "preprocessed")
-    raw_icon_path = str(group_payload.get("icon_path", "")).strip()
-    manual_icon_path = Path(raw_icon_path).expanduser().resolve() if raw_icon_path else None
-    manual_screenshot_paths = tuple(
-        Path(str(path)).expanduser().resolve()
-        for path in group_payload.get("screenshot_paths", [])
-        if str(path).strip()
-    )
+    manual_icon_path, manual_screenshot_paths = _group_asset_paths(group_payload)
     bundle = preprocess_submission_assets(
         package_group,
         asset_dir=asset_dir,
@@ -1825,6 +1886,7 @@ def command_preprocess_assets(payload: dict) -> dict:
             icon_path=bundle.icon_path,
             screenshot_paths=bundle.screenshot_paths,
             warnings=list(bundle.warnings),
+            assets_preprocessed=True,
         ),
         "logs": logs,
     }

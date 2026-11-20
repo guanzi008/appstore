@@ -9,6 +9,7 @@ from appstore.capabilities import (
     normalize_deb_system_lines,
     normalize_linglong_system_lines,
     sync_capabilities_to_cache,
+    system_lines_for_arch,
     write_capability_cache,
 )
 from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
@@ -24,7 +25,11 @@ class CapabilityCacheTests(unittest.TestCase):
                 "deb:11": (BaselineOption(system_line_code="11", baseline_id="2300", minor_version="23.0.0"),),
                 "linglong:21": (BaselineOption(system_line_code="21", baseline_id="2500", minor_version="25.0.0"),),
             },
-            arch_options={"4": StoreAdaptOption(code="4", label="x86")},
+            arch_options=normalize_adapt_options({"datas": {"arch": [
+                {"code": 4, "name": "x86", "sysPlatforms": [{"code": 11}, {"code": 11}]},
+                {"code": 3, "name": "arm64"},
+                {"code": 7, "name": "riscv64", "sysPlatforms": []},
+            ]}}, "arch"),
             cpu_clip_options={"0": StoreAdaptOption(code="0", label="其他cpu")},
             motherboard_options={"1": StoreAdaptOption(code="1", label="青松")},
         )
@@ -35,6 +40,11 @@ class CapabilityCacheTests(unittest.TestCase):
             loaded = load_capability_cache(latest_path)
             self.assertTrue(latest_path.exists())
             self.assertEqual(loaded, cache)
+            self.assertEqual(loaded.arch_options["4"].system_line_codes, ("11",))
+            self.assertEqual(tuple(system_lines_for_arch(loaded, "deb", "4")), ("11",))
+            self.assertEqual(system_lines_for_arch(loaded, "linglong", "4"), {})
+            self.assertEqual(tuple(system_lines_for_arch(loaded, "linglong", "3")), ("21",))
+            self.assertEqual(system_lines_for_arch(loaded, "deb", "7"), {})
 
     def test_normalize_linglong_system_lines_uses_raw_store_codes(self) -> None:
         payload = {

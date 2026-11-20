@@ -7,10 +7,11 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
+from appstore.appstore_client import build_requests_session
 from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
 from appstore.capture_workflow import CapturePackageResult
 from appstore.session_state import BrowserSessionState, SessionStateStore
-from ui.assets import AssetBundle, _prepare_icon, _prepare_screenshot
+from ui.assets import AssetBundle, _prepare_icon, _prepare_screenshot, detect_asset_candidates, preprocess_assets
 from ui.backend import (
     BatchGroupSubmissionPlan,
     LoginContext,
@@ -28,14 +29,19 @@ from ui.backend import (
     try_restore_cached_login,
 )
 from ui.package_meta import PackageGroup, PackageMetadata
-from ui.preferences import PreferenceStore, UIPreferences
+from ui.preferences import DefaultTargetRange, PreferenceStore, UIPreferences
 from ui.cpp_bridge import (
+    _capability_cache_to_json,
     _group_payload_to_package_group,
+    _group_payload_to_plan,
     _group_payload_to_targets,
     _group_to_json,
     _online_group_from_detail,
+    _refresh_group_system_lines,
     _sync_existing_detail_assets,
+    _targets_for_auto_matched_packages,
     command_login_credentials,
+    command_save_preferences,
 )
 
 
@@ -43,14 +49,10 @@ class _CredentialClient:
     def __init__(self, session=None) -> None:
         self.session = session
 
-    async def _login_and_export_state(self, username: str, password: str):
-        return (
-            [{"name": "token", "value": "abc", "domain": ".uniontech.com", "path": "/"}],
-            {"authorization": "Bearer abc"},
-            {},
+    def login(self, username: str, password: str):
+        self.session = build_requests_session(
+            cookies=[{"name": "access-token", "value": "abc", "domain": "appstore-dev.uniontech.com", "path": "/"}],
         )
-
-    def fetch_dev_info(self):
         return {"dev_name": "odatacc"}
 
 
@@ -175,6 +177,51 @@ class UiBackendCacheTests(unittest.TestCase):
             self.assertEqual(self._png_size(result), (512, 512))
             self.assertTrue(result.exists())
 
+    def test_preprocess_preserves_valid_screenshots_when_the_icon_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = _make_package_group(root / "fixture.deb", pkg_name="fixture")
+            icon = root / "icon.png"
+            self._write_test_image(icon, 32, 32)
+            self.assertLess(icon.stat().st_size, 1024)
+            self.assertEqual(detect_asset_candidates(package, asset_dir=root)[0], icon)
+            icon.write_bytes(b"corrupt icon")
+            screenshots = root / "screenshots"
+            screenshots.mkdir()
+            for dimensions in ("360x640", "1051x702"):
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"testsrc=s={dimensions}",
+                     "-frames:v", "1", "-threads", "1", str(screenshots / f"{dimensions}.png")],
+                    check=True,
+                    capture_output=True,
+                )
+
+            bundle = preprocess_assets(package, output_dir=root / "processed", asset_dir=root)
+            self.assertIsNone(bundle.icon_path)
+            self.assertIn("图标处理失败", bundle.warnings[0])
+            self.assertCountEqual(map(self._png_size, bundle.screenshot_paths), [(360, 640), (1056, 704)])
+
+            cleared = preprocess_assets(package, output_dir=root / "processed", asset_dir=root, manual_screenshot_paths=())
+            self.assertEqual(cleared.screenshot_paths, ())
+
+    def test_prepare_screenshot_uses_display_orientation_from_jpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "source.png"
+            source = root / "rotation.jpg"
+            self._write_test_image(original, 641, 439)
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", str(original), "-frames:v", "1", str(source)],
+                capture_output=True,
+                check=True,
+            )
+            # Add EXIF orientation 6 to represent a camera image displayed in portrait.
+            exif = b"Exif\x00\x00II" + struct.pack("<HIHHHIHI", 42, 8, 1, 274, 3, 1, 6, 0)
+            jpeg = source.read_bytes()
+            source.write_bytes(jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(exif) + 2) + exif + jpeg[2:])
+
+            self.assertEqual(self._png_size(_prepare_screenshot(source, root / "processed")), (450, 800))
+
     def test_login_with_credentials_saves_session_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir) / "session-state"
@@ -186,6 +233,7 @@ class UiBackendCacheTests(unittest.TestCase):
             cached = SessionStateStore(cache_dir).load("odatacc")
             self.assertIsNotNone(cached)
             self.assertEqual(cached.account, "odatacc")
+            self.assertEqual(cached.cookies[0]["name"], "access-token")
 
     def test_try_restore_cached_login_reuses_valid_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -235,6 +283,54 @@ class UiBackendCacheTests(unittest.TestCase):
 
 
 class UiPreferencesTests(unittest.TestCase):
+    def test_saves_specific_versions_and_preserves_legacy_system_line_defaults(self) -> None:
+        ranges = {
+            "deb:x86": {"2": {"baseline_id": "121", "unsupported_baseline_ids": ["128"]}},
+            "linglong:x86": {},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            store = PreferenceStore(Path(directory) / "preferences.json")
+            store.save(UIPreferences(default_target_system_lines={"x86": ("11",)}))
+            with patch("ui.cpp_bridge.PreferenceStore", return_value=store):
+                saved = command_save_preferences({"preferences": {
+                    "default_target_system_lines": {"x86": ["11"]},
+                    "default_target_ranges": ranges,
+                }})["preferences"]
+                command_save_preferences({"preferences": {"default_target_system_lines": {"x86": ["11"]}}})
+            self.assertEqual(saved["default_target_ranges"], ranges)
+            loaded = store.load()
+            self.assertEqual(loaded.target_ranges("deb", "x86"), {"2": DefaultTargetRange("121", ("128",))})
+            self.assertEqual(loaded.target_ranges("linglong", "x86"), {})
+
+    def test_catalog_and_new_package_defaults_keep_each_professional_version(self) -> None:
+        versions = (BaselineOption("2", "114", "1073"), BaselineOption("2", "121", "1074"), BaselineOption("2", "128", "1075"))
+        cache = CapabilityCache(
+            generated_at="2026-11-20T00:00:00+08:00",
+            deb_system_lines={"2": SystemLine("2", "专业版", "deb")},
+            linglong_system_lines={"2": SystemLine("2", "professionalV20", "linglong")},
+            baseline_options={"deb:2": versions, "linglong:2": versions},
+        )
+        catalog = _capability_cache_to_json(cache)["default_system_line_options"]
+        deb = catalog["deb"]["x86"][0]["baseline_options"]
+        linglong = catalog["linglong"]["x86"][0]["baseline_options"]
+        self.assertEqual([(v["version"], v["id"]) for v in deb if v["selectable"]], [
+            ("1075", "128"), ("1074", "121"), ("1073", "114"),
+        ])
+        self.assertEqual([v["version"] for v in linglong if v["selectable"]], ["1075"])
+        preferences = UIPreferences(default_target_ranges={
+            "deb:x86": {"2": DefaultTargetRange("121", ("128",))},
+            "linglong:x86": {"2": DefaultTargetRange("128")},
+        })
+        package = _make_package_group(Path("/fixture.deb"))
+        row, = build_target_options(cache, package_group=package, preferences=preferences)
+        self.assertTrue(row.selected)
+        self.assertEqual(row.selected_baseline_ids, ("121",))
+        self.assertEqual(row.unsupported_baseline_ids, ("128",))
+        refresh, = _refresh_group_system_lines({
+            "package_family": "deb", "packages": [{"path": "/fixture.deb", "arch": "amd64"}],
+        }, cache, preferences)
+        self.assertEqual(refresh["selected_baseline_ids"], ["121"])
+
     def test_round_trips_last_session_account(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = PreferenceStore(Path(temp_dir) / "preferences.json")
@@ -328,6 +424,66 @@ class UiPreferencesTests(unittest.TestCase):
 
 
 class UiCppBridgeOnlineDetailTests(unittest.TestCase):
+    def test_online_versions_stay_with_their_package_and_line(self) -> None:
+        cache = CapabilityCache(
+            generated_at="2026-11-20T16:00:00+08:00",
+            deb_system_lines={"11": SystemLine("11", "社区版V23", "deb")},
+            linglong_system_lines={},
+            baseline_options={"deb:11": (BaselineOption("11", "101", "23.0"), BaselineOption("11", "102", "23.1"))},
+        )
+        group = _online_group_from_detail(
+            StoreAppMatch(app_id="100", detail_id="detail-100", pkg_name="fixture", app_name="Fixture"),
+            {
+                "app_basic_info": {"pkgInstallMode": 1},
+                "app_fit_info": {"baseline": [{"id": "101"}]},
+                "app_origin_pkgs": [
+                    None,
+                    {"pkg_arch": "4", "supSys": "11", "supBlineVer": "", "unsupportBlineVers": ""},
+                    {"pkg_arch": "3", "supSys": "11", "supBlineVer": "101,102", "unsupportBlineVers": "102,103"},
+                ],
+            },
+            {"app_name_zh": "Fixture"},
+            cache,
+        )
+        rows = group["targets"]
+        self.assertEqual([row["selected"] for row in rows], [True, True])
+        self.assertEqual(rows[0]["selected_baseline_ids"], [])
+        self.assertEqual(rows[1]["selected_baseline_ids"], ["101", "102"])
+        self.assertEqual(rows[1]["unsupported_baseline_ids"], ["102", "103"])
+        refreshed = _refresh_group_system_lines(group, cache, UIPreferences())
+        self.assertEqual(refreshed, rows)
+
+    def test_replacement_inherits_selected_lines_from_multiple_rows_of_the_same_arch(self) -> None:
+        package = {"path": "/new.deb", "arch": "loong64"}
+        local = {"packages": [package], "targets": [{"package_path": "/new.deb", "code": code} for code in ("11", "21")]}
+        online = {"targets": [
+            {"package_path": "old-a", "package_arch": "loong64", "code": "11", "selected": True},
+            {"package_path": "old-a", "package_arch": "loong64", "code": "21", "selected": False},
+            {"package_path": "old-b", "package_arch": "loong64", "code": "21", "selected": True},
+            {"package_path": "old-c", "package_arch": "loongarch64", "code": "2", "selected": True},
+        ]}
+        selected = _targets_for_auto_matched_packages(local, online, [package])
+        self.assertEqual([row["code"] for row in selected if row["selected"]], ["11", "21"])
+
+    def test_submission_preprocesses_imported_assets_and_reuses_checked_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            package = _make_package_group(root / "fixture.deb")
+            icon = root / "icon.png"
+            screenshot = root / "screenshot.png"
+            payload = {"icon_path": str(icon), "screenshot_paths": [str(screenshot)]}
+
+            with patch("ui.cpp_bridge._group_payload_to_package_group", return_value=package):
+                raw, _ = _group_payload_to_plan(payload)
+                checked, _ = _group_payload_to_plan(dict(payload, assets_preprocessed=True))
+
+            self.assertEqual(raw.manual_icon_path, icon)
+            self.assertEqual(raw.manual_screenshot_paths, (screenshot,))
+            self.assertIsNone(raw.prepared_icon_path)
+            self.assertEqual(raw.prepared_screenshot_paths, ())
+            self.assertEqual(checked.prepared_icon_path, icon)
+            self.assertEqual(checked.prepared_screenshot_paths, (screenshot,))
+
     def test_local_package_auto_match_loads_online_assets_and_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)

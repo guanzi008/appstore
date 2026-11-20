@@ -19,9 +19,6 @@ def decide_execution_mode(*, release: ReleaseRecord, cli_mode: str) -> str:
 
 
 def resolve_target_system_line(*, package: PackageRecord, target: TargetRecord) -> ResolvedTarget:
-    arch = (package.declared_arch or "").strip().lower()
     sup_sys_code = (target.sup_sys_code or "").strip()
     baseline_id = (target.baseline_id or "").strip()
-    if arch in {"loong64", "loongarch64"} and sup_sys_code == "11":
-        return ResolvedTarget(sup_sys_code="21", baseline_id=baseline_id)
     return ResolvedTarget(sup_sys_code=sup_sys_code, baseline_id=baseline_id)

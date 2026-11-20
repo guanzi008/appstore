@@ -52,6 +52,9 @@ class _FakeSession:
         self.calls.append(("POST", url, payload))
         return self._responses.pop(0)
 
+    def close(self) -> None:
+        pass
+
 
 class ClientDecisionTests(unittest.TestCase):
     def _release(self, **overrides) -> SimpleNamespace:
@@ -501,13 +504,13 @@ class ClientSessionTests(unittest.TestCase):
         self.assertNotEqual(session.headers["Authorization"], "refresh-only")
 
     @patch("appstore.appstore_client.build_requests_session")
-    @patch.object(AppStoreClient, "_login_and_export_state")
+    @patch("appstore.appstore_client.login_store_cookies")
     def test_login_wraps_auth_verification_failure_as_authentication_error(
         self,
-        export_state_mock,
+        login_cookies_mock,
         build_session_mock,
     ) -> None:
-        export_state_mock.return_value = ([{"name": "sid", "value": "cookie"}], {}, {})
+        login_cookies_mock.return_value = [{"name": "access-token", "value": "test-cookie"}]
         fake_session = _FakeSession([_FakeResponse(json_data={"status": 401, "message": "denied"})])
         build_session_mock.return_value = fake_session
         client = AppStoreClient()

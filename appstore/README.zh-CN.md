@@ -109,6 +109,12 @@ python3 -m appstore.upload_batch upload your.xlsx --mode browser
 python3 -m pip install -r appstore/requirements.txt
 ```
 
+账号密码登录和 API 模式使用系统 OpenSSL。使用 `browser` 模式时，另安装浏览器依赖：
+
+```bash
+python3 -m pip install -r appstore/requirements-browser.txt
+```
+
 ### 2. 先同步商店能力缓存
 
 `generate-template`、`validate` 和 `upload` 都依赖能力缓存。第一次使用时，先跑：
@@ -405,7 +411,7 @@ python3 -m appstore.upload_batch validate your.xlsx --rows r:20
 
 - 复用登录态缓存
 - 默认缓存目录：`appstore/cache/session-state`
-- 支持 `--headless` 和 `--no-headless`
+- 在桌面会话中打开可见浏览器
 - 支持 `--artifact-dir`
 
 示例：
@@ -415,13 +421,13 @@ APPSTORE_USERNAME='你的账号' APPSTORE_PASSWORD='你的密码' \
 python3 -m appstore.upload_batch upload your.xlsx \
   --mode browser \
   --session-cache-dir appstore/cache/session-state \
-  --artifact-dir /tmp/appstore-browser-run \
-  --no-headless
+  --artifact-dir /tmp/appstore-browser-run
 ```
 
 注意：
 
 - 浏览器模式依赖真实页面结构，适合“更新已有应用”
+- GitHub 托管 Runner 等无桌面环境使用 `api` 模式。`--headless` 已停用
 - 如果应用无法通过 `pkg_name` 唯一定位，最好填写 `app_id_override`
 - 浏览器模式的输出除了普通报告，还会写浏览器产物
 

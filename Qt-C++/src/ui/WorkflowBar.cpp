@@ -40,7 +40,8 @@ WorkflowBar::WorkflowBar(QWidget *parent)
     layout->setSpacing(10);
     layout->setAlignment(Qt::AlignVCenter);
 
-    auto *stepsLayout = new QHBoxLayout();
+    m_steps = new QWidget(this);
+    auto *stepsLayout = new QHBoxLayout(m_steps);
     stepsLayout->setContentsMargins(0, 0, 0, 0);
     stepsLayout->setSpacing(5);
     m_parseStepLabel = makeStepLabel(this);
@@ -55,18 +56,16 @@ WorkflowBar::WorkflowBar(QWidget *parent)
     stepsLayout->addWidget(makeStepSeparator(this));
     stepsLayout->addWidget(m_submitStepLabel);
     stepsLayout->addStretch(1);
-    layout->addLayout(stepsLayout, 1);
+    layout->addWidget(m_steps);
 
     m_statusLabel = new QLabel(QStringLiteral("拖入包文件开始。"), this);
     m_statusLabel->setObjectName(QStringLiteral("MutedText"));
-    m_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_statusLabel->setMinimumWidth(180);
-    m_statusLabel->setMaximumWidth(360);
+    m_statusLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     m_statusLabel->setFixedHeight(30);
-    m_statusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    layout->addWidget(m_statusLabel, 0, Qt::AlignVCenter);
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    layout->addWidget(m_statusLabel, 1, Qt::AlignVCenter);
 
-    m_submitButton = new QPushButton(style()->standardIcon(QStyle::SP_ArrowForward), QStringLiteral("执行全自动提交"), this);
+    m_submitButton = new QPushButton(QStringLiteral("提交到商店"), this);
     m_submitButton->setObjectName(QStringLiteral("PrimaryAction"));
     m_submitButton->setCursor(Qt::PointingHandCursor);
     m_submitButton->setFixedHeight(38);
@@ -74,6 +73,7 @@ WorkflowBar::WorkflowBar(QWidget *parent)
     layout->addWidget(m_submitButton, 0, Qt::AlignVCenter);
 
     resetSteps();
+    setStatusText(QStringLiteral("拖入包文件开始。"));
 }
 
 void WorkflowBar::resetSteps()
@@ -110,12 +110,35 @@ void WorkflowBar::setStepStates(StepState parse, StepState capture, StepState wa
 void WorkflowBar::setStatusText(const QString &text)
 {
     m_statusLabel->setToolTip(text);
-    m_statusLabel->setText(m_statusLabel->fontMetrics().elidedText(text, Qt::ElideMiddle, m_statusLabel->maximumWidth()));
+    updateStatusLabel();
 }
 
 void WorkflowBar::setBusy(bool busy)
 {
     m_submitButton->setEnabled(!busy);
+}
+
+void WorkflowBar::setPublishControlsVisible(bool visible)
+{
+    m_steps->setVisible(visible);
+    m_submitButton->setVisible(visible);
+    setFixedHeight(visible ? 56 : 44);
+    layout()->activate();
+    updateStatusLabel();
+}
+
+void WorkflowBar::resizeEvent(QResizeEvent *event)
+{
+    QFrame::resizeEvent(event);
+    updateStatusLabel();
+}
+
+void WorkflowBar::updateStatusLabel()
+{
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(m_statusLabel->fontMetrics().elidedText(
+            m_statusLabel->toolTip(), Qt::ElideRight, m_statusLabel->contentsRect().width()));
+    }
 }
 
 void WorkflowBar::updateStepLabel(QLabel *label, const QString &title, StepState state)

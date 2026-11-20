@@ -9,6 +9,9 @@
 class QCheckBox;
 class QLabel;
 class QMimeData;
+class QPushButton;
+class QStackedWidget;
+class QTabWidget;
 
 class MetadataPanel;
 class ScreenshotPanel;
@@ -62,6 +65,7 @@ private:
     void openPreferences();
     void preprocessAssets();
     void captureScreenshots();
+    void chooseIconFile();
     void chooseScreenshotFiles();
     void pasteScreenshotFromClipboard();
     void removeScreenshotAt(int index);
@@ -70,9 +74,10 @@ private:
     void submitCurrentGroup();
 
     QString ensureManualAssetDir() const;
+    QString newScreenshotPath(const QString &suffix) const;
     QString copyScreenshotFileToAssets(const QString &sourcePath);
     QString saveClipboardImageToAssets();
-    void writePlaceholderScreenshot(const QString &path, int index) const;
+    bool writePlaceholderScreenshot(const QString &path, int index) const;
     QJsonObject groupWithSelectedOnlineApp(QJsonObject group) const;
 
     static QStringList packagePathsFromMimeData(const QMimeData *mimeData);
@@ -84,15 +89,22 @@ private:
     ScreenshotPanel *m_screenshotPanel = nullptr;
     WorkflowBar *m_workflowBar = nullptr;
     QLabel *m_titleLabel = nullptr;
-    QLabel *m_capabilityLabel = nullptr;
-    QLabel *m_dropHintLabel = nullptr;
-    QCheckBox *m_autoPilotCheck = nullptr;
+    QLabel *m_publishSummaryLabel = nullptr;
+    QLabel *m_publishDetailsLabel = nullptr;
+    QPushButton *m_importButton = nullptr;
+    QPushButton *m_syncButton = nullptr;
+    QStackedWidget *m_workspacePages = nullptr;
+    QWidget *m_homePage = nullptr;
+    QTabWidget *m_workspaceTabs = nullptr;
+    QWidget *m_publishPage = nullptr;
+    QCheckBox *m_preprocessAfterImportCheck = nullptr;
 
     QJsonArray m_groups;
     QJsonArray m_myAppsRows;
     QJsonObject m_currentGroup;
     QJsonObject m_selectedOnlineApp;
     QJsonObject m_preferences;
+    QJsonObject m_systemLineOptions;
     QJsonArray m_categories;
     QString m_preferredAccount;
     QString m_selectedPackagePath;

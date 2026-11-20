@@ -8,12 +8,14 @@
 #include "ui/ScreenshotPanel.h"
 #include "ui/SidebarWidget.h"
 #include "ui/TargetMatrixPanel.h"
+#include "ui/VersionPicker.h"
 #include "ui/WorkflowBar.h"
 
 #include <DTitlebar>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -26,6 +28,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLinearGradient>
@@ -35,10 +38,15 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSizePolicy>
+#include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QStringList>
+#include <QTabWidget>
 #include <QUrl>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <vector>
@@ -309,6 +317,7 @@ QJsonObject copyEditableOnlineFields(QJsonObject target, const QJsonObject &sour
 
     if (!target.contains(QStringLiteral("icon_path")) || target.value(QStringLiteral("icon_path")).toString().trimmed().isEmpty()) {
         target.insert(QStringLiteral("icon_path"), source.value(QStringLiteral("icon_path")));
+        target.insert(QStringLiteral("assets_preprocessed"), false);
     }
     return target;
 }
@@ -369,8 +378,8 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("应用投递助手"));
     setAcceptDrops(true);
-    resize(1480, 820);
-    setMinimumSize(1180, 720);
+    resize(1180, 800);
+    setMinimumSize(980, 680);
 
     buildUi();
     AppTheme::apply(this);
@@ -427,78 +436,119 @@ void MainWindow::buildUi()
 
     auto *header = new QHBoxLayout();
     header->setSpacing(12);
-    m_titleLabel = new QLabel(QStringLiteral("应用管理 - 新建版本发布"), workspace);
+    m_titleLabel = new QLabel(workspace);
     m_titleLabel->setObjectName(QStringLiteral("PageTitle"));
+    m_titleLabel->setTextFormat(Qt::PlainText);
+    m_titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     header->addWidget(m_titleLabel, 1);
 
-    m_capabilityLabel = new QLabel(QStringLiteral("能力缓存：校验中"), workspace);
-    m_capabilityLabel->setObjectName(QStringLiteral("MutedText"));
-    m_capabilityLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    header->addWidget(m_capabilityLabel);
-
-    m_autoPilotCheck = new QCheckBox(QStringLiteral("Auto-Pilot（全自动提交）"), workspace);
-    m_autoPilotCheck->setCursor(Qt::PointingHandCursor);
-    header->addWidget(m_autoPilotCheck);
-
-    auto *syncButton = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("同步"), workspace);
-    syncButton->setCursor(Qt::PointingHandCursor);
-    connect(syncButton, &QPushButton::clicked, this, &MainWindow::syncStoreData);
-    header->addWidget(syncButton);
+    m_importButton = new QPushButton(QStringLiteral("导入安装包"), workspace);
+    connect(m_importButton, &QPushButton::clicked, this, &MainWindow::choosePackages);
+    header->addWidget(m_importButton);
+    m_syncButton = new QPushButton(QStringLiteral("同步商店"), workspace);
+    m_syncButton->setToolTip(QStringLiteral("正在检查商店能力缓存"));
+    connect(m_syncButton, &QPushButton::clicked, this, &MainWindow::syncStoreData);
+    header->addWidget(m_syncButton);
     workspaceLayout->addLayout(header);
 
-    auto *content = new QHBoxLayout();
-    content->setSpacing(10);
-    workspaceLayout->addLayout(content, 1);
+    m_workspacePages = new QStackedWidget(workspace);
+    workspaceLayout->addWidget(m_workspacePages, 1);
 
-    auto *leftColumn = new QVBoxLayout();
-    leftColumn->setSpacing(8);
-    content->addLayout(leftColumn, 1);
-
-    auto *dropZone = new QFrame(workspace);
+    m_homePage = new QWidget(m_workspacePages);
+    auto *homeLayout = new QVBoxLayout(m_homePage);
+    homeLayout->setContentsMargins(24, 24, 24, 24);
+    auto *dropZone = new QFrame(m_homePage);
     dropZone->setObjectName(QStringLiteral("DropZone"));
-    dropZone->setFixedHeight(62);
+    dropZone->setMinimumWidth(320);
     auto *dropLayout = new QVBoxLayout(dropZone);
-    dropLayout->setContentsMargins(12, 6, 12, 6);
-    dropLayout->setSpacing(2);
-    m_dropHintLabel = new QLabel(QStringLiteral("拖拽 .deb / linglong 文件到这里进行智能解析"), dropZone);
-    m_dropHintLabel->setObjectName(QStringLiteral("DropHint"));
-    m_dropHintLabel->setAlignment(Qt::AlignCenter);
-    auto *chooseButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogNewFolder), QStringLiteral("选择包文件"), dropZone);
+    dropLayout->setContentsMargins(36, 28, 36, 28);
+    dropLayout->setSpacing(12);
+    auto *dropTitle = new QLabel(QStringLiteral("导入安装包"), dropZone);
+    dropTitle->setObjectName(QStringLiteral("PageTitle"));
+    dropLayout->addWidget(dropTitle, 0, Qt::AlignHCenter);
+    auto *hints = new QVBoxLayout();
+    hints->setSpacing(2);
+    for (const QString &text : {QStringLiteral("拖入 .deb、.uab 或 .layer 安装包"),
+                                QStringLiteral("或从左侧打开已上架的应用")}) {
+        auto *hint = new QLabel(text, dropZone);
+        hint->setObjectName(QStringLiteral("MutedText"));
+        hint->setAlignment(Qt::AlignCenter);
+        hint->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+        hint->setMargin(3);
+        hints->addWidget(hint);
+    }
+    dropLayout->addLayout(hints);
+    auto *chooseButton = new QPushButton(QStringLiteral("选择文件"), dropZone);
+    chooseButton->setObjectName(QStringLiteral("PrimaryAction"));
     chooseButton->setCursor(Qt::PointingHandCursor);
-    chooseButton->setMaximumWidth(150);
+    chooseButton->setMinimumHeight(32);
     connect(chooseButton, &QPushButton::clicked, this, &MainWindow::choosePackages);
-    dropLayout->addStretch(1);
-    dropLayout->addWidget(m_dropHintLabel);
     dropLayout->addWidget(chooseButton, 0, Qt::AlignHCenter);
-    dropLayout->addStretch(1);
-    leftColumn->addWidget(dropZone);
+    homeLayout->addStretch(1);
+    homeLayout->addWidget(dropZone, 0, Qt::AlignHCenter);
+    homeLayout->addStretch(1);
+    m_workspacePages->addWidget(m_homePage);
 
-    m_metadataPanel = new MetadataPanel(workspace);
+    m_workspaceTabs = new QTabWidget(m_workspacePages);
+    m_workspaceTabs->setObjectName(QStringLiteral("WorkspaceTabs"));
+    m_workspaceTabs->setDocumentMode(true);
+    m_workspacePages->addWidget(m_workspaceTabs);
+
+    m_metadataPanel = new MetadataPanel(m_workspaceTabs);
     connect(m_metadataPanel, &MetadataPanel::packageSelected, this, &MainWindow::selectPackage);
     connect(m_metadataPanel, &MetadataPanel::packageTargetEditRequested, this, &MainWindow::editPackageTargets);
-    leftColumn->addWidget(m_metadataPanel, 1);
+    m_workspaceTabs->addTab(m_metadataPanel, QStringLiteral("资料与安装包"));
 
-    auto *rightPane = new QFrame(workspace);
-    rightPane->setObjectName(QStringLiteral("RightPane"));
-    rightPane->setMinimumWidth(430);
-    rightPane->setMaximumWidth(500);
-    auto *rightColumn = new QVBoxLayout(rightPane);
-    rightColumn->setContentsMargins(0, 0, 0, 0);
-    rightColumn->setSpacing(8);
-    content->addWidget(rightPane);
-
-    m_screenshotPanel = new ScreenshotPanel(rightPane);
+    auto *assetsPage = new QWidget(m_workspaceTabs);
+    auto *assetsLayout = new QVBoxLayout(assetsPage);
+    assetsLayout->setContentsMargins(0, 0, 0, 0);
+    assetsLayout->setSpacing(8);
+    m_screenshotPanel = new ScreenshotPanel(assetsPage);
+    connect(m_screenshotPanel, &ScreenshotPanel::chooseIconRequested, this, &MainWindow::chooseIconFile);
     connect(m_screenshotPanel, &ScreenshotPanel::addFilesRequested, this, &MainWindow::chooseScreenshotFiles);
     connect(m_screenshotPanel, &ScreenshotPanel::pasteRequested, this, &MainWindow::pasteScreenshotFromClipboard);
     connect(m_screenshotPanel, &ScreenshotPanel::placeholderRequested, this, &MainWindow::generatePlaceholderScreenshots);
     connect(m_screenshotPanel, &ScreenshotPanel::captureRequested, this, &MainWindow::captureScreenshots);
     connect(m_screenshotPanel, &ScreenshotPanel::preprocessRequested, this, &MainWindow::preprocessAssets);
     connect(m_screenshotPanel, &ScreenshotPanel::removeScreenshotRequested, this, &MainWindow::removeScreenshotAt);
-    rightColumn->addWidget(m_screenshotPanel, 1);
+    assetsLayout->addWidget(m_screenshotPanel, 1);
+    m_preprocessAfterImportCheck = new QCheckBox(QStringLiteral("导入安装包后预处理素材"), assetsPage);
+    assetsLayout->addWidget(m_preprocessAfterImportCheck);
+    m_workspaceTabs->addTab(assetsPage, QStringLiteral("图标与截图"));
+
+    m_publishPage = new QWidget(m_workspaceTabs);
+    auto *publishLayout = new QVBoxLayout(m_publishPage);
+    publishLayout->setContentsMargins(0, 0, 0, 0);
+    auto *reviewCard = new QFrame(m_publishPage);
+    reviewCard->setObjectName(QStringLiteral("Card"));
+    auto *reviewLayout = new QVBoxLayout(reviewCard);
+    reviewLayout->setContentsMargins(16, 14, 16, 14);
+    reviewLayout->setSpacing(8);
+    m_publishSummaryLabel = new QLabel(reviewCard);
+    m_publishSummaryLabel->setObjectName(QStringLiteral("CardTitle"));
+    m_publishSummaryLabel->setTextFormat(Qt::PlainText);
+    m_publishSummaryLabel->setWordWrap(true);
+    reviewLayout->addWidget(m_publishSummaryLabel);
+    m_publishDetailsLabel = new QLabel(reviewCard);
+    m_publishDetailsLabel->setObjectName(QStringLiteral("MutedText"));
+    m_publishDetailsLabel->setWordWrap(true);
+    m_publishDetailsLabel->setTextFormat(Qt::PlainText);
+    reviewLayout->addWidget(m_publishDetailsLabel);
+    reviewLayout->addStretch();
+    auto *reviewScroll = new QScrollArea(m_publishPage);
+    reviewScroll->setObjectName(QStringLiteral("FlatScroll"));
+    reviewScroll->setWidgetResizable(true);
+    reviewScroll->setWidget(reviewCard);
+    publishLayout->addWidget(reviewScroll, 1);
+    m_workspaceTabs->addTab(m_publishPage, QStringLiteral("检查与提交"));
 
     m_workflowBar = new WorkflowBar(workspace);
     connect(m_workflowBar, &WorkflowBar::submitRequested, this, &MainWindow::submitCurrentGroup);
     workspaceLayout->addWidget(m_workflowBar);
+    connect(m_workspaceTabs, &QTabWidget::currentChanged, this, [this]() {
+        m_workflowBar->setPublishControlsVisible(m_workspaceTabs->currentWidget() == m_publishPage);
+    });
+    renderCurrentGroup();
 }
 
 void MainWindow::bootstrap()
@@ -534,6 +584,7 @@ void MainWindow::handleBridgeStarted(const QString &command)
         m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("running"), QStringLiteral("解析包信息"));
         m_workflowBar->setStepStates(StepState::Running, StepState::Idle, StepState::Idle, StepState::Idle);
     } else if (command == QStringLiteral("preprocess_assets") || command == QStringLiteral("capture_screenshots")) {
+        m_screenshotPanel->setEnabled(false);
         m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("running"), command == QStringLiteral("capture_screenshots") ? QStringLiteral("执行自动截图") : QStringLiteral("预处理素材"));
         m_workflowBar->setStepStates(StepState::Done, StepState::Running, StepState::Idle, StepState::Idle);
     } else if (command == QStringLiteral("submit")) {
@@ -568,6 +619,12 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         } else if (command == QStringLiteral("bootstrap")) {
             m_workflowBar->setStatusText(QStringLiteral("登录缓存校验完成。"));
         } else if (command == QStringLiteral("sync_store_data")) {
+            const QString key = data.value(QStringLiteral("group_key")).toString();
+            if (!key.isEmpty() && key == m_currentGroup.value(QStringLiteral("key")).toString()) {
+                QJsonObject group = currentGroupFromUi();
+                group.insert(QStringLiteral("targets"), data.value(QStringLiteral("targets")));
+                setCurrentGroup(group);
+            }
             m_workflowBar->setStatusText(QStringLiteral("商店数据已更新。"));
         } else {
             m_workflowBar->setStatusText(QStringLiteral("登录成功，会话已保存。"));
@@ -650,7 +707,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
                 autoMatched
                     ? QStringLiteral("解析完成，已按包名和包类型匹配我的应用，并同步线上资料、素材与适配项。")
                     : QStringLiteral("解析完成，已载入当前应用。"));
-            if (m_autoPilotCheck->isChecked()) {
+            if (m_preprocessAfterImportCheck->isChecked()) {
                 preprocessAssets();
             }
         } else {
@@ -662,6 +719,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
     }
 
     if (command == QStringLiteral("preprocess_assets") || command == QStringLiteral("capture_screenshots")) {
+        m_screenshotPanel->setEnabled(true);
         const QJsonObject group = data.value(QStringLiteral("group")).toObject();
         if (!group.isEmpty()) {
             setCurrentGroup(group);
@@ -669,7 +727,14 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         appendLogs(data.value(QStringLiteral("logs")).toArray());
         m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), command == QStringLiteral("capture_screenshots") ? QStringLiteral("截图已返回") : QStringLiteral("素材已准备"));
         m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Running, StepState::Idle);
-        m_workflowBar->setStatusText(command == QStringLiteral("capture_screenshots") ? QStringLiteral("截图流程完成。") : QStringLiteral("素材预处理完成。"));
+        if (command == QStringLiteral("capture_screenshots")) {
+            m_workflowBar->setStatusText(QStringLiteral("截图流程完成。"));
+        } else {
+            const QJsonArray warnings = group.value(QStringLiteral("asset_warnings")).toArray();
+            const int validCount = group.value(QStringLiteral("screenshot_paths")).toArray().size();
+            const QString summary = QStringLiteral("素材已校验，保留 %1 张有效截图。").arg(validCount);
+            m_workflowBar->setStatusText(warnings.isEmpty() ? summary : summary + warnings.first().toString());
+        }
         return;
     }
 
@@ -717,6 +782,7 @@ void MainWindow::handleBridgeFailed(const QString &command, const QString &messa
         m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("failed"), sidebarFailureDetail(command, message));
         m_workflowBar->setStepStates(StepState::Failed, StepState::Idle, StepState::Idle, StepState::Idle);
     } else if (command == QStringLiteral("preprocess_assets") || command == QStringLiteral("capture_screenshots")) {
+        m_screenshotPanel->setEnabled(true);
         m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("failed"), sidebarFailureDetail(command, message));
         m_workflowBar->setStepStates(StepState::Done, StepState::Failed, StepState::Idle, StepState::Idle);
     } else if (command == QStringLiteral("submit")) {
@@ -764,15 +830,18 @@ void MainWindow::applySessionData(const QJsonObject &data)
     m_sidebar->setLoginState(loggedIn, accountLabel);
 
     const QJsonObject capabilities = data.value(QStringLiteral("capabilities")).toObject();
+    if (data.contains(QStringLiteral("capabilities"))) {
+        m_systemLineOptions = capabilities.value(QStringLiteral("default_system_line_options")).toObject();
+    }
     if (capabilities.value(QStringLiteral("loaded")).toBool(false)) {
-        m_capabilityLabel->setText(QStringLiteral("能力缓存： deb %1 / linglong %2 / baseline %3 / 适配 %4")
+        m_syncButton->setToolTip(QStringLiteral("能力缓存：DEB 系统线 %1，玲珑系统线 %2，版本组 %3，硬件适配项 %4")
                                        .arg(capabilities.value(QStringLiteral("deb_system_line_count")).toInt())
                                        .arg(capabilities.value(QStringLiteral("linglong_system_line_count")).toInt())
                                        .arg(capabilities.value(QStringLiteral("baseline_group_count")).toInt())
                                        .arg(capabilities.value(QStringLiteral("cpu_clip_option_count")).toInt()
                                             + capabilities.value(QStringLiteral("motherboard_option_count")).toInt()));
     } else {
-        m_capabilityLabel->setText(QStringLiteral("能力缓存：未加载"));
+        m_syncButton->setToolTip(QStringLiteral("能力缓存未加载，登录后可同步商店数据"));
     }
 
     const QJsonArray categories = data.value(QStringLiteral("categories")).toArray();
@@ -784,12 +853,16 @@ void MainWindow::applySessionData(const QJsonObject &data)
 
 void MainWindow::setCurrentGroup(const QJsonObject &group)
 {
+    const QString previousKey = m_currentGroup.value(QStringLiteral("key")).toString();
     m_currentGroup = normalizedGroup(groupWithSelectedOnlineApp(group));
     m_selectedPackagePath = effectiveSelectedPackagePath(m_currentGroup, m_selectedPackagePath);
     if (!m_selectedPackagePath.isEmpty()) {
         m_currentGroup.insert(QStringLiteral("selected_package_path"), m_selectedPackagePath);
     }
     const QString currentKey = m_currentGroup.value(QStringLiteral("key")).toString();
+    if (currentKey != previousKey) {
+        m_workspaceTabs->setCurrentWidget(m_metadataPanel);
+    }
     if (!currentKey.isEmpty()) {
         bool replaced = false;
         for (int index = 0; index < m_groups.size(); ++index) {
@@ -847,18 +920,26 @@ void MainWindow::persistCurrentGroupFromUi()
 void MainWindow::renderCurrentGroup()
 {
     const bool hasGroup = !m_currentGroup.isEmpty();
-    const bool onlineOnly = m_currentGroup.value(QStringLiteral("online_only")).toBool(false);
     const QString displayName = AppJson::displayName(m_currentGroup);
-    m_titleLabel->setText(hasGroup
-                              ? QStringLiteral("应用管理 - %1").arg(displayName)
-                              : QStringLiteral("应用管理 - 新建版本发布"));
-    if (onlineOnly) {
-        m_dropHintLabel->setText(QStringLiteral("已选择我的应用：%1。可提交资料/截图/适配项更新，拖入新包则更新安装包").arg(displayName));
-    } else {
-        m_dropHintLabel->setText(hasGroup
-                                     ? QStringLiteral("已载入 %1 个包：%2").arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()).arg(AppJson::stringValue(m_currentGroup, QStringLiteral("pkg_name")))
-                                     : QStringLiteral("拖拽 .deb / linglong 文件到这里进行智能解析"));
+    m_titleLabel->setText(hasGroup ? displayName : QStringLiteral("应用管理"));
+    m_titleLabel->setToolTip(hasGroup ? displayName : QString());
+    m_importButton->setVisible(hasGroup);
+    if (!hasGroup) {
+        m_workspaceTabs->setCurrentWidget(m_metadataPanel);
     }
+    m_workspacePages->setCurrentWidget(hasGroup ? static_cast<QWidget *>(m_workspaceTabs) : m_homePage);
+    m_workflowBar->setPublishControlsVisible(hasGroup && m_workspaceTabs->currentWidget() == m_publishPage);
+    m_publishSummaryLabel->setText(QStringLiteral("%1 · %2 个安装包")
+                                      .arg(displayName)
+                                      .arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()));
+    QStringList review{QStringLiteral("已加载 %1 张截图").arg(m_currentGroup.value(QStringLiteral("screenshot_paths")).toArray().size())};
+    for (const QJsonValue &value : m_currentGroup.value(QStringLiteral("packages")).toArray()) {
+        const QJsonObject package = value.toObject();
+        const QStringList lines = TargetMatrixPanel::selectedSystemLines(m_currentGroup, package.value(QStringLiteral("path")).toString());
+        const QString selection = lines.isEmpty() ? QStringLiteral("未选择系统线") : lines.join(QStringLiteral("、"));
+        review.append(QStringLiteral("%1  ·  %2").arg(packageLabel(package), selection));
+    }
+    m_publishDetailsLabel->setText(review.join(QLatin1Char('\n')));
     m_selectedPackagePath = effectiveSelectedPackagePath(m_currentGroup, m_selectedPackagePath);
     m_metadataPanel->setGroup(m_currentGroup);
     m_metadataPanel->setSelectedPackagePath(m_selectedPackagePath);
@@ -898,12 +979,12 @@ void MainWindow::selectPackage(const QString &packagePath)
     const QString label = packageLabel(packageByPath(group, m_selectedPackagePath));
     renderCurrentGroup();
     renderSidebar();
-    m_workflowBar->setStatusText(QStringLiteral("已选择包：%1。右侧显示该包截图，右键包行可调整适配范围。").arg(label));
+    m_workflowBar->setStatusText(QStringLiteral("已选择包：%1。可在「图标与截图」查看素材。").arg(label));
 }
 
 void MainWindow::editPackageTargets(const QString &packagePath)
 {
-    if (m_currentGroup.isEmpty()) {
+    if (m_currentGroup.isEmpty() || m_bridge->isBusy()) {
         return;
     }
     QJsonObject group = currentGroupFromUi();
@@ -964,7 +1045,8 @@ QJsonObject MainWindow::groupWithSelectedOnlineApp(QJsonObject group) const
     if (appId.isEmpty()) {
         return group;
     }
-    if (m_currentGroup.value(QStringLiteral("online_only")).toBool(false) && selectedMatchId(m_currentGroup) == appId) {
+    if (groupHasPackages(group) && m_currentGroup.value(QStringLiteral("online_only")).toBool(false)
+        && selectedMatchId(m_currentGroup) == appId) {
         group = copyEditableOnlineFields(group, m_currentGroup);
     }
     const QString detailId = AppJson::stringValue(m_selectedOnlineApp, QStringLiteral("detail_id"), m_selectedOnlineApp.value(QStringLiteral("id")).toString());
@@ -1021,10 +1103,6 @@ QJsonObject MainWindow::groupForSelectedPackageView(const QJsonObject &group) co
     if (!package.isEmpty()) {
         view.insert(QStringLiteral("selected_package_path"), selectedPath);
         view.insert(QStringLiteral("selected_package_label"), packageLabel(package));
-        const QString packageIconPath = package.value(QStringLiteral("icon_path")).toString().trimmed();
-        if (!packageIconPath.isEmpty()) {
-            view.insert(QStringLiteral("selected_package_icon_path"), packageIconPath);
-        }
     }
     return view;
 }
@@ -1047,7 +1125,9 @@ void MainWindow::choosePackages()
         QStringLiteral("选择待发布包"),
         QDir::homePath(),
         QStringLiteral("Packages (*.deb *.uab *.layer)"));
-    analyzePackagePaths(paths);
+    if (!paths.isEmpty()) {
+        analyzePackagePaths(paths);
+    }
 }
 
 void MainWindow::listMyApps()
@@ -1151,6 +1231,7 @@ void MainWindow::syncStoreData()
 {
     QJsonObject payload;
     payload.insert(QStringLiteral("preferred_account"), m_preferredAccount);
+    payload.insert(QStringLiteral("group"), currentGroupFromUi());
     runBridgeCommand(QStringLiteral("sync_store_data"), payload, 300000);
 }
 
@@ -1160,137 +1241,173 @@ void MainWindow::openPreferences()
         QMessageBox::information(this, QStringLiteral("后端忙碌"), QStringLiteral("当前后端任务尚未结束。"));
         return;
     }
-
-    struct SystemLineOption {
-        QString code;
-        QString label;
-    };
-    std::vector<SystemLineOption> systemLines;
-    const QJsonArray targets = m_currentGroup.value(QStringLiteral("targets")).toArray();
-    for (const QJsonValue &value : targets) {
-        const QJsonObject target = value.toObject();
-        const QString code = target.value(QStringLiteral("code")).toString().trimmed();
-        if (code.isEmpty()) {
-            continue;
-        }
-        bool exists = false;
-        for (const SystemLineOption &option : systemLines) {
-            if (option.code == code) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists) {
-            const QString label = AppJson::stringValue(target, QStringLiteral("label"), code);
-            systemLines.push_back(SystemLineOption{code, label});
-        }
-    }
-
-    if (systemLines.empty()) {
-        QMessageBox::information(
-            this,
-            QStringLiteral("暂无系统线数据"),
-            QStringLiteral("请先登录并同步商店数据，再选择我的应用或解析一个包后配置默认系统线。"));
+    if (m_systemLineOptions.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("暂无系统线数据"), QStringLiteral("请先登录并同步商店数据。"));
         return;
     }
 
-    struct CheckBinding {
-        QString archKey;
-        QString systemCode;
-        QCheckBox *checkBox = nullptr;
+    struct TargetBinding {
+        QString scope;
+        QString code;
+        QCheckBox *enabled;
+        QComboBox *baseline;
+        VersionPicker *excluded;
     };
-    std::vector<CheckBinding> bindings;
+    std::vector<TargetBinding> bindings;
+    QJsonObject ranges = m_preferences.value(QStringLiteral("default_target_ranges")).toObject();
+    const QJsonObject legacyLines = m_preferences.value(QStringLiteral("default_target_system_lines")).toObject();
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("偏好设置"));
+    dialog.setWindowTitle(QStringLiteral("默认系统线和版本"));
     dialog.setAttribute(Qt::WA_StyledBackground, true);
     dialog.setStyleSheet(styleSheet());
-    dialog.resize(760, 520);
-
+    dialog.resize(780, 530);
     auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(14, 12, 14, 12);
-    layout->setSpacing(8);
-
-    auto *title = new QLabel(QStringLiteral("默认系统线"), &dialog);
-    title->setObjectName(QStringLiteral("DialogTitle"));
-    layout->addWidget(title);
-
-    auto *hint = new QLabel(QStringLiteral("默认系统线仅作用于新解析的本地包；已选择线上应用会继续使用线上原有适配项。"), &dialog);
-    hint->setObjectName(QStringLiteral("MutedText"));
+    auto *hint = new QLabel(QStringLiteral("为新导入的包设置默认范围。选择具体版本时会自动勾选对应系统线。"), &dialog);
     hint->setWordWrap(true);
+    hint->setObjectName(QStringLiteral("MutedText"));
     layout->addWidget(hint);
+    auto *formatRow = new QHBoxLayout();
+    auto *formatLabel = new QLabel(QStringLiteral("包类型"), &dialog);
+    auto *format = new QComboBox(&dialog);
+    formatLabel->setBuddy(format);
+    formatRow->addWidget(formatLabel);
+    formatRow->addWidget(format);
+    formatRow->addStretch();
+    layout->addLayout(formatRow);
 
-    auto *scroll = new QScrollArea(&dialog);
-    scroll->setObjectName(QStringLiteral("FlatScroll"));
-    scroll->setWidgetResizable(true);
-    auto *host = new QWidget(scroll);
-    auto *grid = new QGridLayout(host);
-    grid->setContentsMargins(0, 0, 6, 0);
-    grid->setHorizontalSpacing(14);
-    grid->setVerticalSpacing(6);
-
-    const QJsonObject defaultLines = m_preferences.value(QStringLiteral("default_target_system_lines")).toObject();
-    const QStringList archKeys = {QStringLiteral("x86"), QStringLiteral("arm64"), QStringLiteral("loong64")};
-    const QStringList archLabels = {QStringLiteral("x86 / amd64"), QStringLiteral("arm64"), QStringLiteral("loong64")};
-    auto containsCode = [](const QJsonArray &array, const QString &code) {
-        for (const QJsonValue &value : array) {
-            if (value.toString().trimmed() == code) {
-                return true;
+    auto *pages = new QStackedWidget(&dialog);
+    for (const QString &family : {QStringLiteral("deb"), QStringLiteral("linglong")}) {
+        const QJsonObject familyOptions = m_systemLineOptions.value(family).toObject();
+        if (familyOptions.isEmpty()) {
+            continue;
+        }
+        auto *tabs = new QTabWidget(pages);
+        tabs->setObjectName(QStringLiteral("WorkspaceTabs"));
+        pages->addWidget(tabs);
+        format->addItem(family == QStringLiteral("deb") ? QStringLiteral("DEB") : QStringLiteral("玲珑包"));
+        QStringList arches{QStringLiteral("x86"), QStringLiteral("arm64"), QStringLiteral("loong64"), QStringLiteral("loongarch64")};
+        for (const QString &arch : familyOptions.keys()) {
+            if (!arches.contains(arch)) {
+                arches.append(arch);
             }
         }
-        return false;
-    };
+        for (const QString &arch : arches) {
+            const QJsonArray options = familyOptions.value(arch).toArray();
+            if (options.isEmpty()) {
+                continue;
+            }
+            const QString scope = family + QLatin1Char(':') + arch;
+            QJsonObject selected = ranges.value(scope).toObject();
+            if (!ranges.contains(scope)) {
+                for (const QJsonValue &value : legacyLines.value(arch).toArray()) {
+                    selected.insert(value.toString(), QJsonObject());
+                }
+                ranges.insert(scope, selected);
+            }
 
-    for (int column = 0; column < archKeys.size(); ++column) {
-        auto *columnHost = new QWidget(host);
-        auto *columnLayout = new QVBoxLayout(columnHost);
-        columnLayout->setContentsMargins(0, 0, 0, 0);
-        columnLayout->setSpacing(6);
-        auto *caption = new QLabel(archLabels.at(column), columnHost);
-        caption->setObjectName(QStringLiteral("CardTitle"));
-        columnLayout->addWidget(caption);
+            auto *scroll = new QScrollArea(tabs);
+            scroll->setObjectName(QStringLiteral("FlatScroll"));
+            scroll->setWidgetResizable(true);
+            auto *host = new QWidget(scroll);
+            auto *rows = new QGridLayout(host);
+            rows->setHorizontalSpacing(12);
+            rows->setVerticalSpacing(8);
+            for (int column = 0; column < 3; ++column) {
+                rows->setColumnStretch(column, 1);
+            }
+            rows->addWidget(new QLabel(QStringLiteral("系统线"), host), 0, 0);
+            rows->addWidget(new QLabel(QStringLiteral("兼容基线"), host), 0, 1);
+            rows->addWidget(new QLabel(QStringLiteral("不上架版本"), host), 0, 2);
 
-        const QString archKey = archKeys.at(column);
-        const QJsonArray selectedCodes = defaultLines.value(archKey).toArray();
-        for (const SystemLineOption &option : systemLines) {
-            auto *checkBox = new QCheckBox(option.label, columnHost);
-            checkBox->setChecked(containsCode(selectedCodes, option.code));
-            checkBox->setToolTip(QStringLiteral("系统线代码：%1").arg(option.code));
-            columnLayout->addWidget(checkBox);
-            bindings.push_back(CheckBinding{archKey, option.code, checkBox});
+            int row = 1;
+            for (const QJsonValue &value : options) {
+                const QJsonObject option = value.toObject();
+                const QString code = option.value(QStringLiteral("code")).toString();
+                const QString name = AppJson::stringValue(option, QStringLiteral("label"), code);
+                const QJsonObject saved = selected.value(code).toObject();
+                const QJsonArray versions = option.value(QStringLiteral("baseline_options")).toArray();
+                auto *checkBox = new QCheckBox(name, host);
+                checkBox->setChecked(selected.contains(code));
+                checkBox->setToolTip(QStringLiteral("系统线 %1").arg(code));
+                auto *baseline = new QComboBox(host);
+                baseline->setObjectName(QStringLiteral("DefaultTargetBaseline"));
+                baseline->setAccessibleName(name + QStringLiteral(" · 兼容基线"));
+                baseline->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                baseline->setMinimumContentsLength(9);
+                baseline->addItem(QStringLiteral("商店默认"), QString());
+                auto *model = qobject_cast<QStandardItemModel *>(baseline->model());
+                const QString baselineId = saved.value(QStringLiteral("baseline_id")).toString();
+                for (const QJsonValue &versionValue : versions) {
+                    const QJsonObject version = versionValue.toObject();
+                    const QString id = version.value(QStringLiteral("id")).toString();
+                    baseline->addItem(AppJson::stringValue(version, QStringLiteral("version"), id), id);
+                    const int index = baseline->count() - 1;
+                    if (!version.value(QStringLiteral("selectable")).toBool(true)) {
+                        if (model != nullptr) {
+                            model->item(index)->setEnabled(false);
+                            model->item(index)->setToolTip(QStringLiteral("这条玲珑系统线的兼容基线从 1075 开始"));
+                        }
+                    } else if (id == baselineId) {
+                        baseline->setCurrentIndex(index);
+                    }
+                }
+                baseline->setEnabled(!versions.isEmpty());
+                auto *excluded = new VersionPicker(versions, saved.value(QStringLiteral("unsupported_baseline_ids")).toArray(),
+                    name + QStringLiteral(" · 不上架版本"), QStringLiteral("无排除版本"), host);
+                excluded->setEnabled(excluded->hasOptions());
+                connect(baseline, qOverload<int>(&QComboBox::currentIndexChanged), checkBox, [baseline, checkBox]() {
+                    if (!baseline->currentData().toString().isEmpty()) {
+                        checkBox->setChecked(true);
+                    }
+                });
+                connect(excluded, &VersionPicker::selectionChanged, checkBox, [excluded, checkBox]() {
+                    if (!excluded->selected().isEmpty()) {
+                        checkBox->setChecked(true);
+                    }
+                });
+                connect(checkBox, &QCheckBox::toggled, &dialog, [baseline, excluded](bool enabled) {
+                    if (!enabled) {
+                        baseline->setCurrentIndex(0);
+                        excluded->clearSelection();
+                    }
+                });
+                rows->addWidget(checkBox, row, 0);
+                rows->addWidget(baseline, row, 1);
+                rows->addWidget(excluded, row++, 2);
+                bindings.push_back(TargetBinding{scope, code, checkBox, baseline, excluded});
+            }
+            rows->setRowStretch(row, 1);
+            scroll->setWidget(host);
+            tabs->addTab(scroll, arch == QStringLiteral("x86") ? QStringLiteral("x86 / amd64") : arch);
         }
-        columnLayout->addStretch(1);
-        grid->addWidget(columnHost, 0, column);
     }
-    scroll->setWidget(host);
-    layout->addWidget(scroll, 1);
+    connect(format, qOverload<int>(&QComboBox::currentIndexChanged), pages, &QStackedWidget::setCurrentIndex);
+    layout->addWidget(pages, 1);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
+    layout->addWidget(buttons);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    QJsonObject nextDefaults;
-    for (const QString &archKey : archKeys) {
-        QJsonArray codes;
-        for (const CheckBinding &binding : bindings) {
-            if (binding.archKey == archKey && binding.checkBox != nullptr && binding.checkBox->isChecked()) {
-                codes.append(binding.systemCode);
-            }
+    for (const TargetBinding &binding : bindings) {
+        QJsonObject selected = ranges.value(binding.scope).toObject();
+        if (binding.enabled->isChecked()) {
+            selected.insert(binding.code, QJsonObject{
+                {QStringLiteral("baseline_id"), binding.baseline->currentData().toString()},
+                {QStringLiteral("unsupported_baseline_ids"), binding.excluded->selected()},
+            });
+        } else {
+            selected.remove(binding.code);
         }
-        if (!codes.isEmpty()) {
-            nextDefaults.insert(archKey, codes);
-        }
+        ranges.insert(binding.scope, selected);
     }
 
     QJsonObject nextPreferences = m_preferences;
-    nextPreferences.insert(QStringLiteral("default_target_system_lines"), nextDefaults);
-    m_preferences = nextPreferences;
-
+    nextPreferences.insert(QStringLiteral("default_target_ranges"), ranges);
     QJsonObject payload;
     payload.insert(QStringLiteral("preferences"), nextPreferences);
     runBridgeCommand(QStringLiteral("save_preferences"), payload, 120000);
@@ -1301,13 +1418,6 @@ void MainWindow::preprocessAssets()
     const QJsonObject group = currentGroupFromUi();
     if (group.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先拖入并解析包文件。"));
-        return;
-    }
-    if (!groupHasPackages(group)) {
-        QMessageBox::information(
-            this,
-            QStringLiteral("未选择本地包"),
-            QStringLiteral("线上包已用于查看与复用素材；需要重新提取图标或自动制图时，请先拖入本地 .deb / linglong 包。"));
         return;
     }
     QJsonObject payload;
@@ -1332,6 +1442,30 @@ void MainWindow::captureScreenshots()
     QJsonObject payload;
     payload.insert(QStringLiteral("group"), group);
     runBridgeCommand(QStringLiteral("capture_screenshots"), payload, 900000);
+}
+
+void MainWindow::chooseIconFile()
+{
+    if (m_currentGroup.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先选择应用或导入安装包。"));
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("选择应用图标"), QDir::homePath(), QStringLiteral("Images (*.png *.jpg *.jpeg *.webp *.bmp)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    QImageReader reader(path);
+    if (reader.read().isNull()) {
+        QMessageBox::information(this, QStringLiteral("图标无法读取"), QStringLiteral("请选择一张可打开的图片。"));
+        return;
+    }
+
+    QJsonObject group = currentGroupFromUi();
+    group.insert(QStringLiteral("icon_path"), path);
+    group.insert(QStringLiteral("assets_preprocessed"), false);
+    setCurrentGroup(group);
+    m_workflowBar->setStatusText(QStringLiteral("已更换应用图标。点击“预处理素材”可校验图标和截图。"));
 }
 
 void MainWindow::chooseScreenshotFiles()
@@ -1365,11 +1499,16 @@ void MainWindow::chooseScreenshotFiles()
         return;
     }
     group.insert(QStringLiteral("screenshot_paths"), screenshots);
+    group.insert(QStringLiteral("assets_preprocessed"), false);
     group.insert(QStringLiteral("asset_dir"), ensureManualAssetDir());
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), QStringLiteral("%1 张手动截图").arg(addedCount));
     m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Running, StepState::Idle);
-    m_workflowBar->setStatusText(QStringLiteral("已添加 %1 张本地截图，点击“预处理素材”后按商店规格调整尺寸。").arg(addedCount));
+    const int skippedCount = paths.size() - addedCount;
+    const QString summary = QStringLiteral("已添加 %1 张本地截图。").arg(addedCount);
+    m_workflowBar->setStatusText(skippedCount > 0
+        ? summary + QStringLiteral("已跳过 %1 张无法读取的图片。").arg(skippedCount)
+        : summary + QStringLiteral("点击“预处理素材”可调整尺寸。"));
 }
 
 void MainWindow::pasteScreenshotFromClipboard()
@@ -1389,6 +1528,7 @@ void MainWindow::pasteScreenshotFromClipboard()
     QJsonArray screenshots = group.value(QStringLiteral("screenshot_paths")).toArray();
     screenshots.append(savedPath);
     group.insert(QStringLiteral("screenshot_paths"), screenshots);
+    group.insert(QStringLiteral("assets_preprocessed"), false);
     group.insert(QStringLiteral("asset_dir"), ensureManualAssetDir());
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), QStringLiteral("剪贴板截图"));
@@ -1408,6 +1548,7 @@ void MainWindow::removeScreenshotAt(int index)
     }
     screenshots.removeAt(index);
     group.insert(QStringLiteral("screenshot_paths"), screenshots);
+    group.insert(QStringLiteral("assets_preprocessed"), false);
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), screenshots.isEmpty() ? QStringLiteral("idle") : QStringLiteral("done"),
                             screenshots.isEmpty() ? QStringLiteral("等待截图") : QStringLiteral("%1 张候选").arg(screenshots.size()));
@@ -1421,20 +1562,20 @@ void MainWindow::generatePlaceholderScreenshots()
         return;
     }
 
-    const QString assetDir = ensureManualAssetDir();
-    const QString screenshotsDir = QDir(assetDir).filePath(QStringLiteral("screenshots"));
-    QDir().mkpath(screenshotsDir);
-
     QJsonArray screenshots;
     for (int index = 1; index <= 3; ++index) {
-        const QString path = QDir(screenshotsDir).filePath(QStringLiteral("screenshot_%1.png").arg(index));
-        writePlaceholderScreenshot(path, index);
+        const QString path = newScreenshotPath(QStringLiteral("png"));
+        if (!writePlaceholderScreenshot(path, index)) {
+            m_workflowBar->setStatusText(QStringLiteral("占位截图保存失败。"));
+            return;
+        }
         screenshots.append(path);
     }
 
     QJsonObject group = currentGroupFromUi();
-    group.insert(QStringLiteral("asset_dir"), assetDir);
+    group.insert(QStringLiteral("asset_dir"), ensureManualAssetDir());
     group.insert(QStringLiteral("screenshot_paths"), screenshots);
+    group.insert(QStringLiteral("assets_preprocessed"), false);
     setCurrentGroup(group);
     m_sidebar->setTaskState(QStringLiteral("capture"), QStringLiteral("done"), QStringLiteral("3 张占位图"));
     m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Running, StepState::Idle);
@@ -1480,6 +1621,19 @@ void MainWindow::submitCurrentGroup()
     }
     if (m_preferredAccount.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("未登录"), QStringLiteral("请先扫码登录或复用有效登录缓存。"));
+        return;
+    }
+
+    QStringList missingSystemLines;
+    for (const QJsonValue &value : group.value(QStringLiteral("packages")).toArray()) {
+        const QJsonObject package = value.toObject();
+        if (TargetMatrixPanel::selectedSystemLines(group, package.value(QStringLiteral("path")).toString()).isEmpty()) {
+            missingSystemLines.append(packageLabel(package));
+        }
+    }
+    if (!missingSystemLines.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("请补齐系统线"),
+            QStringLiteral("以下安装包未选择系统线。请在“资料与安装包”中逐包调整。\n%1").arg(missingSystemLines.join(QLatin1Char('\n'))));
         return;
     }
 
@@ -1536,6 +1690,8 @@ void MainWindow::analyzePackagePaths(const QStringList &paths)
     QJsonObject payload;
     payload.insert(QStringLiteral("package_paths"), packagePaths);
     payload.insert(QStringLiteral("preferred_account"), m_preferredAccount);
+    payload.insert(QStringLiteral("preferred_app_id"), AppJson::stringValue(
+        m_selectedOnlineApp, QStringLiteral("app_id"), m_selectedOnlineApp.value(QStringLiteral("id")).toString()));
     runBridgeCommand(QStringLiteral("analyze"), payload, 300000);
 }
 
@@ -1554,23 +1710,22 @@ QString MainWindow::ensureManualAssetDir() const
     return path;
 }
 
+QString MainWindow::newScreenshotPath(const QString &suffix) const
+{
+    const QString screenshotsDir = QDir(ensureManualAssetDir()).filePath(QStringLiteral("screenshots"));
+    QDir().mkpath(screenshotsDir);
+    return QDir(screenshotsDir).filePath(QStringLiteral("screenshot-%1.%2")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces), suffix));
+}
+
 QString MainWindow::copyScreenshotFileToAssets(const QString &sourcePath)
 {
     const QFileInfo sourceInfo(sourcePath);
-    if (!sourceInfo.exists() || !sourceInfo.isFile()) {
+    if (!sourceInfo.isFile() || !QImageReader(sourcePath).canRead()) {
         return {};
     }
     const QString suffix = sourceInfo.suffix().isEmpty() ? QStringLiteral("png") : sourceInfo.suffix().toLower();
-    const QString screenshotsDir = QDir(ensureManualAssetDir()).filePath(QStringLiteral("screenshots"));
-    QDir().mkpath(screenshotsDir);
-
-    int index = m_currentGroup.value(QStringLiteral("screenshot_paths")).toArray().size() + 1;
-    QString targetPath;
-    do {
-        targetPath = QDir(screenshotsDir).filePath(QStringLiteral("screenshot_%1.%2").arg(index).arg(suffix));
-        ++index;
-    } while (QFileInfo::exists(targetPath));
-
+    const QString targetPath = newScreenshotPath(suffix);
     if (QFile::copy(sourceInfo.absoluteFilePath(), targetPath)) {
         return targetPath;
     }
@@ -1580,6 +1735,9 @@ QString MainWindow::copyScreenshotFileToAssets(const QString &sourcePath)
 QString MainWindow::saveClipboardImageToAssets()
 {
     const QMimeData *mimeData = QApplication::clipboard()->mimeData();
+    if (mimeData == nullptr) {
+        return {};
+    }
     QImage image;
     if (mimeData->hasImage()) {
         image = qvariant_cast<QImage>(mimeData->imageData());
@@ -1587,7 +1745,13 @@ QString MainWindow::saveClipboardImageToAssets()
     if (image.isNull() && mimeData->hasUrls()) {
         for (const QUrl &url : mimeData->urls()) {
             const QString path = url.toLocalFile();
-            if (!path.isEmpty() && image.load(path)) {
+            if (path.isEmpty()) {
+                continue;
+            }
+            QImageReader reader(path);
+            reader.setAutoTransform(true);
+            image = reader.read();
+            if (!image.isNull()) {
                 break;
             }
         }
@@ -1596,14 +1760,11 @@ QString MainWindow::saveClipboardImageToAssets()
         return {};
     }
 
-    const QString screenshotsDir = QDir(ensureManualAssetDir()).filePath(QStringLiteral("screenshots"));
-    QDir().mkpath(screenshotsDir);
-    const int index = m_currentGroup.value(QStringLiteral("screenshot_paths")).toArray().size() + 1;
-    const QString path = QDir(screenshotsDir).filePath(QStringLiteral("screenshot_%1.png").arg(index));
+    const QString path = newScreenshotPath(QStringLiteral("png"));
     return image.save(path, "PNG") ? path : QString();
 }
 
-void MainWindow::writePlaceholderScreenshot(const QString &path, int index) const
+bool MainWindow::writePlaceholderScreenshot(const QString &path, int index) const
 {
     QImage image(1050, 700, QImage::Format_ARGB32);
     QLinearGradient background(0, 0, image.width(), image.height());
@@ -1654,7 +1815,7 @@ void MainWindow::writePlaceholderScreenshot(const QString &path, int index) cons
     painter.setPen(QColor(255, 255, 255));
     painter.drawText(QRect(210, 365, 255, 135), Qt::AlignCenter, QStringLiteral("1050 x 700\nPreview %1").arg(index));
     painter.end();
-    image.save(path, "PNG");
+    return image.save(path, "PNG");
 }
 
 QStringList MainWindow::packagePathsFromMimeData(const QMimeData *mimeData)

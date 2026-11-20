@@ -6,8 +6,10 @@
 
 class QCheckBox;
 class QComboBox;
+class ImagePreview;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QScrollArea;
 class QVBoxLayout;
 class QTabWidget;
@@ -40,7 +42,9 @@ private:
     QJsonArray m_categories;
     QJsonObject m_group;
     QString m_selectedPackagePath;
-    QLabel *m_iconLabel = nullptr;
+    ImagePreview *m_iconLabel = nullptr;
+    QLabel *m_systemLineSummary = nullptr;
+    QPushButton *m_systemLineButton = nullptr;
     QLabel *m_pkgNameLabel = nullptr;
     QLabel *m_versionLabel = nullptr;
     QLabel *m_archLabel = nullptr;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -46,7 +47,7 @@ def preprocess_assets(
     output_dir: Path,
     asset_dir: Path | None = None,
     manual_icon_path: Path | None = None,
-    manual_screenshot_paths: tuple[Path, ...] = (),
+    manual_screenshot_paths: tuple[Path, ...] | None = None,
     min_screenshots: int = 3,
     max_screenshots: int = 6,
 ) -> AssetBundle:
@@ -56,17 +57,19 @@ def preprocess_assets(
         if asset_dir is not None and output_dir.exists() and _path_is_within(asset_dir.expanduser().resolve(), output_dir):
             preexisting_icon, preexisting_screenshots = detect_asset_candidates(package_group, asset_dir=asset_dir)
             manual_icon_path = manual_icon_path or preexisting_icon
-            manual_screenshot_paths = tuple(manual_screenshot_paths or preexisting_screenshots)
+            if manual_screenshot_paths is None:
+                manual_screenshot_paths = preexisting_screenshots
 
         manual_icon_path = _snapshot_asset(manual_icon_path, output_dir=output_dir, temp_root=temp_root)
-        manual_screenshot_paths = tuple(
-            path
-            for path in (
-                _snapshot_asset(path, output_dir=output_dir, temp_root=temp_root, prefix=f"screenshot-{index:02d}")
-                for index, path in enumerate(manual_screenshot_paths, start=1)
+        if manual_screenshot_paths is not None:
+            manual_screenshot_paths = tuple(
+                path
+                for path in (
+                    _snapshot_asset(path, output_dir=output_dir, temp_root=temp_root, prefix=f"screenshot-{index:02d}")
+                    for index, path in enumerate(manual_screenshot_paths, start=1)
+                )
+                if path is not None
             )
-            if path is not None
-        )
 
         if output_dir.exists():
             shutil.rmtree(output_dir)
@@ -75,58 +78,56 @@ def preprocess_assets(
         warnings: list[str] = []
         detected_icon, detected_screenshots = detect_asset_candidates(package_group, asset_dir=asset_dir)
         icon_source = manual_icon_path or detected_icon
-        screenshot_sources = tuple(manual_screenshot_paths or detected_screenshots)
+        screenshot_sources = detected_screenshots if manual_screenshot_paths is None else manual_screenshot_paths
 
-        if icon_source is None:
-            extracted_dir = output_dir / "extracted"
-            first_package = package_group.packages[0]
-            if first_package.package_family == "deb":
-                icon_source = extract_deb_icon(
-                    first_package.path,
-                    pkg_name=package_group.pkg_name,
-                    output_dir=extracted_dir,
-                )
+        processed_icon = None
+        try:
+            if icon_source is None:
+                local_package = next((package for package in package_group.packages if package.path.is_file()), None)
+                if local_package is not None:
+                    extract_icon = extract_deb_icon if local_package.package_family == "deb" else extract_archive_icon
+                    icon_source = extract_icon(
+                        local_package.path,
+                        pkg_name=package_group.pkg_name,
+                        output_dir=output_dir / "extracted",
+                    )
+            if icon_source is not None:
+                processed_icon = _prepare_icon(icon_source, output_dir / "icon.png")
             else:
-                icon_source = extract_archive_icon(
-                    first_package.path,
-                    pkg_name=package_group.pkg_name,
-                    output_dir=extracted_dir,
-                )
-        if icon_source is None:
-            warnings.append("未能自动探测到图标，请手动指定图标文件。")
+                warnings.append("未找到应用图标，请手动选择图标文件。")
+        except Exception as exc:
+            warnings.append(f"图标处理失败。{exc}")
 
         if not screenshot_sources:
             warnings.append("未检测到截图，可手动指定资源目录或使用自动截图。")
 
-        processed_icon = _prepare_icon(icon_source, output_dir / "icon.png") if icon_source is not None else None
-
-        processed_screenshots: list[Path] = []
+        processed_sources: dict[Path, Path] = {}
         screenshots_dir = output_dir / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         for index, source in enumerate(screenshot_sources[: max_screenshots], start=1):
             try:
-                processed_screenshots.append(
-                    _prepare_screenshot(source, screenshots_dir / f"screen-{index:02d}")
-                )
+                processed = _prepare_screenshot(source, screenshots_dir / f"screen-{index:02d}")
+                processed_sources[processed] = source
             except Exception as exc:
                 warnings.append(f"截图处理失败 {source.name}: {exc}")
 
         validation_report = None
-        if processed_screenshots:
+        processed_screenshots = ()
+        if processed_sources:
             validation_report = validate_screenshot_paths(
-                tuple(processed_screenshots),
-                min_width=640,
-                min_height=360,
-                min_file_size=4096,
+                tuple(processed_sources),
+                min_width=PORTRAIT_SCREENSHOT_SIZE[0],
+                min_height=PORTRAIT_SCREENSHOT_SIZE[1],
+                min_file_size=1,
                 min_gray_stddev=2.5,
                 min_unique_gray_levels=8,
             )
-            processed_screenshots = list(validation_report.accepted_paths)
+            processed_screenshots = validation_report.accepted_paths
             for item in validation_report.items:
                 if item.accepted:
                     continue
                 reasons = ", ".join(item.reasons) if item.reasons else "rejected"
-                warnings.append(f"{item.analysis.path.name} 被拒绝: {reasons}")
+                warnings.append(f"{processed_sources[item.analysis.path].name} 未通过校验。{reasons}")
 
         if len(processed_screenshots) < min_screenshots:
             warnings.append(
@@ -137,7 +138,7 @@ def preprocess_assets(
             icon_source=icon_source,
             screenshot_sources=screenshot_sources,
             icon_path=processed_icon,
-            screenshot_paths=tuple(processed_screenshots),
+            screenshot_paths=processed_screenshots,
             validation_report=validation_report,
             warnings=tuple(warnings),
         )
@@ -210,7 +211,7 @@ def _detect_screenshots(search_root: Path) -> tuple[Path, ...]:
 
 
 def _is_image_file(path: Path) -> bool:
-    return path.exists() and path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES and path.stat().st_size > 1024
+    return path.suffix.lower() in IMAGE_SUFFIXES and path.is_file() and path.stat().st_size > 0
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -272,76 +273,33 @@ def _prepare_screenshot(source: Path, target_base: Path) -> Path:
         if jpg_path.stat().st_size <= MAX_SCREENSHOT_BYTES:
             png_path.unlink(missing_ok=True)
             return jpg_path
-    return jpg_path if jpg_path.exists() else png_path
+    png_path.unlink(missing_ok=True)
+    jpg_path.unlink(missing_ok=True)
+    raise RuntimeError("截图压缩后仍超过 2 MiB。")
 
 
 def _screenshot_normalize_filters(source: Path) -> str:
     width, height = _probe_dimensions(source)
-    if width <= 0 or height <= 0:
-        raise RuntimeError("invalid screenshot dimensions")
-
     if height > width:
-        min_width, min_height, max_width, max_height = PORTRAIT_SCREENSHOT_SIZE
-        ratio_width, ratio_height = 9, 16
+        min_width, _, max_width, _ = PORTRAIT_SCREENSHOT_SIZE
+        width_step, height_step = 18, 32
     else:
-        min_width, min_height, max_width, max_height = LANDSCAPE_SCREENSHOT_SIZE
-        ratio_width, ratio_height = 3, 2
+        min_width, _, max_width, _ = LANDSCAPE_SCREENSHOT_SIZE
+        width_step, height_step = 6, 4
 
-    target_width, target_height = _bounded_size_for_ratio(
-        width,
-        height,
-        min_width,
-        min_height,
-        max_width,
-        max_height,
-        ratio_width,
-        ratio_height,
+    # Use even dimensions at the required aspect ratio for both PNG and JPEG.
+    requested_units = max(
+        (width + width_step - 1) // width_step,
+        (height + height_step - 1) // height_step,
     )
+    units = max(min_width // width_step, min(max_width // width_step, requested_units))
+    target_width, target_height = units * width_step, units * height_step
     return (
         f"scale={target_width}:{target_height}:"
         "force_original_aspect_ratio=decrease:flags=lanczos,"
         f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:color=black,"
         "setsar=1"
     )
-
-
-def _bounded_size_for_ratio(
-    width: int,
-    height: int,
-    min_width: int,
-    min_height: int,
-    max_width: int,
-    max_height: int,
-    ratio_width: int,
-    ratio_height: int,
-) -> tuple[int, int]:
-    target_ratio = ratio_width / ratio_height
-    current_ratio = width / height
-
-    if current_ratio >= target_ratio:
-        target_width = _clamp(width, min_width, max_width)
-        target_height = round(target_width * ratio_height / ratio_width)
-        if target_height < min_height:
-            target_height = min_height
-            target_width = round(target_height * ratio_width / ratio_height)
-        elif target_height > max_height:
-            target_height = max_height
-            target_width = round(target_height * ratio_width / ratio_height)
-    else:
-        target_height = _clamp(height, min_height, max_height)
-        target_width = round(target_height * ratio_width / ratio_height)
-        if target_width < min_width:
-            target_width = min_width
-            target_height = round(target_width * ratio_height / ratio_width)
-        elif target_width > max_width:
-            target_width = max_width
-            target_height = round(target_width * ratio_height / ratio_width)
-
-    return target_width, target_height
-
-
-def _clamp(value: int, minimum: int, maximum: int) -> int:
-    return max(minimum, min(maximum, value))
 
 
 def _probe_dimensions(path: Path) -> tuple[int, int]:
@@ -353,10 +311,12 @@ def _probe_dimensions(path: Path) -> tuple[int, int]:
                 "error",
                 "-select_streams",
                 "v:0",
+                "-read_intervals",
+                "%+#1",
                 "-show_entries",
-                "stream=width,height",
+                "stream=width,height:stream_side_data=rotation:frame=:frame_side_data=rotation",
                 "-of",
-                "csv=s=x:p=0",
+                "json",
                 str(path),
             ],
             capture_output=True,
@@ -369,16 +329,18 @@ def _probe_dimensions(path: Path) -> tuple[int, int]:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         raise RuntimeError(f"ffprobe failed for {path.name}: {detail}") from exc
 
-    text = completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else ""
     try:
-        width_text, height_text = text.split("x", 1)
-        width = int(width_text)
-        height = int(height_text)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"ffprobe returned invalid dimensions for {path.name}: {text!r}") from exc
+        details = json.loads(completed.stdout)
+        stream = details["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        frame = (details.get("frames") or [{}])[0]
+        side_data = frame.get("side_data_list", []) + stream.get("side_data_list", [])
+        rotation = next((round(float(item["rotation"])) for item in side_data if "rotation" in item), 0)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"ffprobe returned invalid dimensions for {path.name}") from exc
     if width <= 0 or height <= 0:
         raise RuntimeError(f"invalid image dimensions for {path.name}: {width}x{height}")
-    return width, height
+    return (height, width) if rotation % 180 == 90 else (width, height)
 
 
 def _run_ffmpeg_image_convert(

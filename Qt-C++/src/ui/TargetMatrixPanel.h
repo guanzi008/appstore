@@ -2,6 +2,7 @@
 
 #include <QFrame>
 #include <QJsonObject>
+#include <QStringList>
 
 class QLabel;
 class QLayout;
@@ -17,6 +18,7 @@ public:
     explicit TargetMatrixPanel(QWidget *parent = nullptr);
 
     static bool editTargets(QJsonObject *group, const QString &packagePath, QWidget *parent = nullptr);
+    static QStringList selectedSystemLines(const QJsonObject &group, const QString &packagePath);
 
     void setGroup(const QJsonObject &group);
     void setSelectedPackagePath(const QString &packagePath);

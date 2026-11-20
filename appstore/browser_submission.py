@@ -25,7 +25,6 @@ from appstore.browser_runtime import (
     wait_for_logged_in_portal_state,
 )
 from appstore.platform_policy import resolve_target_system_line
-from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from appstore.session_state import SessionStateStore
 
 
@@ -107,7 +106,7 @@ class BrowserSubmissionRunner:
         username: str,
         password: str,
         session_cache_dir: Path | str = "appstore/cache/session-state",
-        headless: bool = True,
+        headless: bool = False,
     ) -> None:
         self.username = username
         self.password = password
@@ -234,6 +233,8 @@ class BrowserSubmissionRunner:
         target_app_id: str,
         artifact_root: Path | str,
     ) -> BrowserSubmissionResult:
+        from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
+
         artifact_dir = Path(artifact_root)
         artifact_dir.mkdir(parents=True, exist_ok=True)
         app_entry = self._resolve_app_entry(client=client, app=app, target_app_id=target_app_id)

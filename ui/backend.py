@@ -18,16 +18,17 @@ from appstore.appstore_client import (
     package_format_from_store_row,
 )
 from appstore.browser_runtime import capture_browser_session_state, wait_for_logged_in_portal_state
-from appstore.capabilities import CapabilityCache, build_system_templates, load_capability_cache, sync_capabilities_to_cache
+from appstore.capabilities import CapabilityCache, load_capability_cache, sync_capabilities_to_cache, system_lines_for_arch
 from appstore.capture_workflow import CaptureOptions, CapturePackageResult, capture_packages
 from appstore.models import AppRecord, PackageRecord, ReleaseRecord, RowResult, TargetRecord
+from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
 from appstore.session_state import BrowserSessionState, SessionStateStore
 from appstore.submission import submit_grouped_release, validate_release_group
 from appstore.translation import TranslationConfig, desired_languages_for_regions, translate_listing_texts
 from appstore.upload_batch import _write_reports
-from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
 from ui.assets import AssetBundle, preprocess_assets
 from ui.package_meta import PackageGroup
+from ui.preferences import DefaultTargetRange, UIPreferences
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -118,7 +119,7 @@ class BatchGroupSubmissionPlan:
     note_en: str = ""
     developer_name: str = ""
     auto_translate_en: bool = True
-    manual_screenshot_paths: tuple[Path, ...] = ()
+    manual_screenshot_paths: tuple[Path, ...] | None = None
     prepared_icon_path: Path | None = None
     prepared_screenshot_paths: tuple[Path, ...] = ()
     asset_warnings: tuple[str, ...] = ()
@@ -126,25 +127,13 @@ class BatchGroupSubmissionPlan:
     manual_en_edited: bool = False
     cpu_clip_codes: tuple[str, ...] | None = None
     motherboard_codes: tuple[str, ...] | None = None
+    manual_icon_path: Path | None = None
 
 
 REGION_OPTIONS: tuple[tuple[str, str], ...] = (
     ("1", "中国（包含港澳台）"),
     ("2", "其他地区"),
 )
-
-PACKAGE_ARCH_TO_STORE_ARCH_CODE = {
-    "amd64": "4",
-    "x86_64": "4",
-    "arm64": "3",
-    "aarch64": "3",
-    "loong64": "6",
-    "loongarch64": "6",
-    "sw64": "8",
-    "sw_64": "8",
-    "mips64": "1",
-    "mips64el": "1",
-}
 
 DEFAULT_ARM_CPU_CLIP_CODES = ("0", "3", "4")
 
@@ -158,21 +147,16 @@ def login_with_credentials(
 ) -> LoginContext:
     _log(log, "使用账号密码登录应用商店。")
     client = AppStoreClient()
-    cookies, local_storage, session_storage = asyncio.run(client._login_and_export_state(username, password))
-    client = AppStoreClient(
-        build_requests_session(
-            cookies=cookies,
-            local_storage=local_storage,
-            session_storage=session_storage,
-        )
-    )
-    dev_info = client.fetch_dev_info()
+    dev_info = client.login(username, password)
     account_key = username.strip() or str(dev_info.get("dev_name", "") or "appstore-user").strip() or "manual-login"
     session_state = BrowserSessionState(
         account=account_key,
-        cookies=cookies,
-        local_storage=local_storage,
-        session_storage=session_storage,
+        cookies=[
+            {"name": cookie.name, "value": cookie.value, "domain": cookie.domain, "path": cookie.path}
+            for cookie in client.session.cookies
+        ],
+        local_storage={},
+        session_storage={},
         user_agent="Mozilla/5.0",
         last_verified_at=datetime.now().isoformat(),
     )
@@ -194,6 +178,8 @@ def login_with_browser(
     session_cache_dir: Path = DEFAULT_SESSION_CACHE_DIR,
     log: Callable[[str], None] | None = None,
 ) -> LoginContext:
+    from appstore.pyppeteer_runtime import PYPPETEER_LAUNCH_OPTIONS, launch
+
     normalized_label = account_label.strip() or "manual-login"
     _log(log, "打开可见浏览器，请扫码或手动完成网页登录。")
 
@@ -231,21 +217,11 @@ def login_with_browser(
 def login_with_browser_state(
     state: BrowserSessionState,
     *,
+    login_mode: str = "browser",
     session_cache_dir: Path = DEFAULT_SESSION_CACHE_DIR,
     log: Callable[[str], None] | None = None,
 ) -> LoginContext:
     normalized_label = state.account.strip() or "manual-login"
-    store = SessionStateStore(session_cache_dir)
-    session_state_path = store.save(
-        BrowserSessionState(
-            account=normalized_label,
-            cookies=state.cookies,
-            local_storage=state.local_storage,
-            session_storage=state.session_storage,
-            user_agent=state.user_agent,
-            last_verified_at=state.last_verified_at,
-        )
-    )
     client = AppStoreClient(
         build_requests_session(
             cookies=state.cookies,
@@ -254,13 +230,24 @@ def login_with_browser_state(
         )
     )
     dev_info = client.fetch_dev_info()
+    store = SessionStateStore(session_cache_dir)
+    session_state_path = store.save(
+        BrowserSessionState(
+            account=normalized_label,
+            cookies=state.cookies,
+            local_storage=state.local_storage,
+            session_storage=state.session_storage,
+            user_agent=state.user_agent,
+            last_verified_at=datetime.now().isoformat(),
+        )
+    )
     account_label = str(dev_info.get("dev_name", "") or normalized_label).strip() or normalized_label
-    _log(log, f"网页登录成功，session 已保存到 {session_state_path}")
+    _log(log, f"登录会话已验证并保存到 {session_state_path}")
     return LoginContext(
         client=client,
         account_label=account_label,
         session_state_path=session_state_path,
-        login_mode="browser",
+        login_mode=login_mode,
         can_use_browser_mode=False,
     )
 
@@ -348,7 +335,13 @@ def load_or_sync_capabilities(
 ) -> CapabilityCache:
     latest_path = cache_dir / "latest.json"
     if latest_path.exists():
-        return load_capability_cache(cache_dir)
+        cache = load_capability_cache(cache_dir)
+        if client is not None and not any(option.system_line_codes is not None for option in cache.arch_options.values()):
+            try:
+                return sync_capabilities(client, cache_dir=cache_dir, log=log)
+            except Exception:
+                _log(log, "暂时无法同步分架构的系统线，已读取本地缓存。")
+        return cache
     if client is None:
         raise RuntimeError("capability cache missing; please login and sync first")
     return sync_capabilities(client, cache_dir=cache_dir, log=log)
@@ -359,53 +352,80 @@ def build_target_options(
     *,
     package_group: PackageGroup,
     default_target_system_lines: dict[str, tuple[str, ...]] | None = None,
+    preferences: UIPreferences | None = None,
 ) -> tuple[SystemTargetOption, ...]:
-    templates = [
-        template
-        for template in build_system_templates(cache)
-        if template.package_family == package_group.package_family
-    ]
+    preferences = preferences or UIPreferences(default_target_system_lines=default_target_system_lines or {})
     result: list[SystemTargetOption] = []
     for package in package_group.packages:
-        default_codes = set((default_target_system_lines or {}).get(_preference_arch_key(package.pkg_arch), ()))
-        for template in templates:
+        family = package.package_family
+        defaults = default_target_ranges(cache, family, package.pkg_arch, preferences)
+        lines = system_lines_for_arch(cache, family, store_arch_code(package.pkg_arch))
+        for code, line in lines.items():
             baseline_options = tuple(
-                (option.baseline_id, option.minor_version) for option in template.baseline_options
+                (option.baseline_id, option.minor_version) for option in cache.baseline_options.get(f"{family}:{code}", ())
             )
-            selected = template.sup_sys_code in default_codes
+            target_range = defaults.get(code, DefaultTargetRange())
             result.append(
                 SystemTargetOption(
                     package_path=str(package.path),
                     package_label=package.path.name,
                     package_arch=package.pkg_arch,
-                    code=template.sup_sys_code,
-                    label=template.system_label,
-                    package_family=template.package_family,
+                    code=code,
+                    label=line.label,
+                    package_family=family,
                     baseline_options=baseline_options,
-                    selected=selected,
-                    baseline_id="",
-                    selected_baseline_ids=(),
-                    unsupported_baseline_ids=(),
+                    selected=code in defaults,
+                    baseline_id=target_range.baseline_id,
+                    selected_baseline_ids=(target_range.baseline_id,) if target_range.baseline_id else (),
+                    unsupported_baseline_ids=target_range.unsupported_baseline_ids,
                 )
             )
     return tuple(result)
 
 
-def _preference_arch_key(arch: str) -> str:
-    normalized = str(arch or "").strip().lower().replace("_", "-")
-    if normalized in {"amd64", "x86-64", "x86_64", "x64", "x86"}:
-        return "x86"
-    if normalized in {"arm64", "aarch64"}:
-        return "arm64"
-    if normalized in {"loong64", "loongarch64"}:
-        return "loong64"
-    return normalized
+def preference_baseline_selectable(package_family: str, system_line: str, minor_version: str) -> bool:
+    if package_family != "linglong" or system_line not in {"2", "6"}:
+        return True
+    # The developer portal disables earlier professional and education baselines for Linglong.
+    try:
+        return not float(minor_version) < 1075
+    except ValueError:
+        return True
+
+
+def default_target_ranges(
+    cache: CapabilityCache, package_family: str, arch: str, preferences: UIPreferences,
+) -> dict[str, DefaultTargetRange]:
+    lines = system_lines_for_arch(cache, package_family, store_arch_code(arch))
+    result: dict[str, DefaultTargetRange] = {}
+    for code, saved in preferences.target_ranges(package_family, preference_arch_key(arch)).items():
+        if code not in lines:
+            continue
+        versions = {option.baseline_id: option.minor_version for option in cache.baseline_options.get(f"{package_family}:{code}", ())}
+        baseline = saved.baseline_id
+        if baseline not in versions or not preference_baseline_selectable(package_family, code, versions[baseline]):
+            baseline = ""
+        excluded = tuple(version for version in saved.unsupported_baseline_ids if version in versions)
+        result[code] = DefaultTargetRange(baseline, excluded)
+    return result
+
+
+def preference_arch_key(arch: str) -> str:
+    normalized = normalize_package_arch(arch)
+    return "x86" if normalized == "amd64" else normalized
+
+
+def store_arch_code(arch: str) -> str:
+    try:
+        return resolve_store_arch(arch).code
+    except PlatformMappingError:
+        return arch.strip()
 
 
 def package_group_store_arch_codes(package_group: PackageGroup) -> tuple[str, ...]:
     codes: list[str] = []
     for arch in package_group.pkg_arches:
-        code = PACKAGE_ARCH_TO_STORE_ARCH_CODE.get(arch.strip().lower(), arch.strip())
+        code = store_arch_code(arch)
         if code and code not in codes:
             codes.append(code)
     return tuple(sorted(codes, key=_store_code_sort_key))
@@ -615,7 +635,7 @@ def preprocess_submission_assets(
     *,
     asset_dir: Path | None,
     manual_icon_path: Path | None,
-    manual_screenshot_paths: tuple[Path, ...],
+    manual_screenshot_paths: tuple[Path, ...] | None,
     output_dir: Path,
     log: Callable[[str], None] | None = None,
 ) -> AssetBundle:
@@ -1135,8 +1155,8 @@ def _resolve_batch_assets(
     return preprocess_submission_assets(
         plan.package_group,
         asset_dir=plan.asset_dir,
-        manual_icon_path=None,
-        manual_screenshot_paths=tuple(plan.manual_screenshot_paths),
+        manual_icon_path=plan.manual_icon_path,
+        manual_screenshot_paths=plan.manual_screenshot_paths,
         output_dir=output_dir,
         log=log,
     )
@@ -1144,12 +1164,12 @@ def _resolve_batch_assets(
 
 def _prepared_assets_from_plan(plan: BatchGroupSubmissionPlan) -> AssetBundle | None:
     icon_path = plan.prepared_icon_path.expanduser().resolve() if plan.prepared_icon_path is not None else None
-    if icon_path is not None and not icon_path.exists():
+    if icon_path is not None and not icon_path.is_file():
         icon_path = None
     screenshot_paths: list[Path] = []
     for raw_path in plan.prepared_screenshot_paths:
         normalized = raw_path.expanduser().resolve()
-        if normalized.exists():
+        if normalized.is_file():
             screenshot_paths.append(normalized)
     if icon_path is None and not screenshot_paths:
         return None

@@ -101,10 +101,19 @@ def normalize_adapt_options(adapt_info: dict, key: str) -> dict[str, StoreAdaptO
         label = str(row.get("name", "")).strip()
         if not code:
             continue
+        platforms = row.get("sysPlatforms") if key == "arch" else None
+        platform_codes = None
+        if isinstance(platforms, list):
+            platform_codes = tuple(dict.fromkeys(
+                str(platform["code"]).strip()
+                for platform in platforms
+                if isinstance(platform, dict) and platform.get("code") not in (None, "", 0, "0")
+            ))
         normalized[code] = StoreAdaptOption(
             code=code,
             label=label or code,
             remark=str(row.get("remark", "") or "").strip(),
+            system_line_codes=platform_codes,
         )
     return normalized
 
@@ -152,6 +161,8 @@ def load_capability_cache(path: Path | str) -> CapabilityCache:
                 code=entry["code"],
                 label=entry["label"],
                 remark=entry.get("remark", ""),
+                system_line_codes=tuple(entry["system_line_codes"])
+                if isinstance(entry.get("system_line_codes"), list) else None,
             )
             for code, entry in data.items()
         }
@@ -165,6 +176,18 @@ def load_capability_cache(path: Path | str) -> CapabilityCache:
         cpu_clip_options=load_adapt_options(payload.get("cpu_clip_options", {})),
         motherboard_options=load_adapt_options(payload.get("motherboard_options", {})),
     )
+
+
+def system_lines_for_arch(cache: CapabilityCache, package_family: str, arch_code: str) -> dict[str, SystemLine]:
+    if package_family == "deb":
+        lines = cache.deb_system_lines
+    elif package_family == "linglong":
+        lines = cache.linglong_system_lines
+    else:
+        return {}
+    arch = cache.arch_options.get(arch_code)
+    allowed = arch.system_line_codes if arch is not None else None
+    return {code: line for code, line in lines.items() if code != "0" and (allowed is None or code in allowed)}
 
 
 def build_system_templates(cache: CapabilityCache) -> tuple[SystemTemplate, ...]:
