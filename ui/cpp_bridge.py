@@ -48,6 +48,7 @@ from ui.backend import (
 from appstore.appstore_client import package_family_from_app_detail, package_format_from_app_detail
 from appstore.capabilities import system_lines_for_arch
 from appstore.platforms import ARCHITECTURES, normalize_package_arch
+from appstore.update_payload import origin_pkg_arch
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences, normalize_default_target_ranges
 from appstore.session_state import SessionStateStore
@@ -424,8 +425,7 @@ def _origin_pkg_value(origin_pkg: dict, *keys: str) -> str:
 
 
 def _display_arch_from_origin_pkg(capability_cache, origin_pkg: dict) -> tuple[str, str]:
-    raw_code = _origin_pkg_value(origin_pkg, "pkg_arch", "pkgArchCode", "arch")
-    raw_label = _origin_pkg_value(origin_pkg, "pkgArch", "pkg_arch_label")
+    raw_code, raw_label = origin_pkg_arch(origin_pkg)
     label = ""
     if capability_cache is not None and raw_code:
         option = capability_cache.arch_options.get(raw_code)
@@ -675,13 +675,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
 
     arch_codes = _dedupe(_code_items(fit_info.get("arch")))
     if not arch_codes:
-        arch_codes = _dedupe(
-            [
-                str(pkg.get("pkg_arch", "")).strip()
-                for pkg in origin_pkgs
-                if isinstance(pkg, dict) and str(pkg.get("pkg_arch", "")).strip()
-            ]
-        )
+        arch_codes = _dedupe([origin_pkg_arch(pkg)[0] for pkg in origin_pkgs if isinstance(pkg, dict)])
     arch_label = _arch_label_from_codes(capability_cache, arch_codes)
     version_values = _dedupe(
         [

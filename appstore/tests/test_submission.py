@@ -335,6 +335,67 @@ class GroupedSubmissionTests(unittest.TestCase):
         )
         self.assertEqual(payload["app_info"]["app_fit_info"]["system_platform"], [{"code": 11}, {"code": 21}])
 
+    def test_updating_each_loong_architecture_preserves_the_other_package(self) -> None:
+        architectures = (
+            ("loongarch64", "5", "11", "2300"),
+            ("loong64", "6", "21", "2500"),
+        )
+        for updating, retained in (architectures, architectures[::-1]):
+            arch, code, system, baseline = updating
+            other_arch, other_code, other_system, other_baseline = retained
+            path = Path(f"/tmp/demo_2.0_{arch}.deb")
+            package = PackageRecord(20, "demo", "stable", "new", "deb", "deb", path, declared_arch=arch)
+            validated = validate_release_group(
+                _app(),
+                _release(),
+                (package,),
+                {"new": (TargetRecord(30, "demo", "stable", "new", system, baseline_id=baseline),)},
+                {"new": PackageInfo("demo", "2.0", arch, 1, "new-hash", path)},
+                _cache(),
+            )
+            for shared_field in ("app_id", "id"):
+                with self.subTest(arch=arch, shared_field=shared_field):
+                    existing_packages = [
+                        {
+                            shared_field: "42",
+                            "pkg_name": "demo",
+                            "pkg_version": "1.0",
+                            "pkgArch": other_arch,
+                            "pkgType": 11,
+                            "supSys": other_system,
+                            "supBlineVer": other_baseline,
+                            "file_save_key": "retained-package",
+                        },
+                        {
+                            shared_field: "42",
+                            "pkg_name": "demo",
+                            "pkg_version": "1.0",
+                            "pkg_arch": code,
+                            "pkgType": 11,
+                            "supSys": system,
+                            "supBlineVer": baseline,
+                            "file_save_key": "replaced-package",
+                        },
+                    ]
+                    payload = build_release_payload(
+                        validated,
+                        uploads_by_package={"new": UploadedFileRef("temppkg", "updated-package", 1, "new-hash")},
+                        app_uploads=None,
+                        target_app_id="42",
+                        existing_app_detail={"app_origin_pkgs": existing_packages},
+                    )["app_info"]
+
+                    rows = payload["app_origin_pkgs"]
+                    self.assertCountEqual([row["pkg_arch"] for row in rows], [code, other_code])
+                    rows_by_arch = {row["pkg_arch"]: row for row in rows}
+                    self.assertEqual(rows_by_arch[code]["file_save_key"], "updated-package")
+                    self.assertEqual(rows_by_arch[other_code]["file_save_key"], "retained-package")
+                    self.assertEqual(
+                        rows_by_arch[other_code]["baseline"],
+                        [{"system_platform": int(other_system), "id": other_baseline}],
+                    )
+                    self.assertCountEqual(payload["app_fit_info"]["arch"], [{"code": 5}, {"code": 6}])
+
     def test_build_release_payload_carries_cpu_and_motherboard_fit_options(self) -> None:
         app = _app()
         release = ReleaseRecord(

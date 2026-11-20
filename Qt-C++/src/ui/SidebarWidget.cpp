@@ -2,9 +2,13 @@
 
 #include "core/AppJson.h"
 
+#include <QAction>
+#include <QApplication>
+#include <QClipboard>
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QKeySequence>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStyle>
@@ -14,6 +18,18 @@
 #include <QWidget>
 
 namespace {
+
+void enableAppNameCopy(QPushButton *button, const QString &name)
+{
+    auto *copyName = new QAction(QStringLiteral("复制应用名"), button);
+    copyName->setShortcut(QKeySequence::Copy);
+    copyName->setShortcutContext(Qt::WidgetShortcut);
+    QObject::connect(copyName, &QAction::triggered, button, [name]() {
+        QApplication::clipboard()->setText(name);
+    });
+    button->addAction(copyName);
+    button->setContextMenuPolicy(Qt::ActionsContextMenu);
+}
 
 QLabel *makeTaskLabel(const QString &text, QWidget *parent)
 {
@@ -307,14 +323,16 @@ void SidebarWidget::renderGroups()
         const QString status = currentGroup.value(QStringLiteral("status_str")).toString().trimmed();
         const QString subtitle = status.isEmpty() ? arches : status;
         if (!groupTargetsOnlineApp(currentGroup)) {
+            const QString title = AppJson::displayName(currentGroup);
             auto *button = new QPushButton(
-                elidedSidebarText(this, QStringLiteral("%1  %2").arg(AppJson::displayName(currentGroup), subtitle)),
+                elidedSidebarText(this, QStringLiteral("%1  %2").arg(title, subtitle)),
                 this);
             button->setProperty("class", QStringLiteral("AppRow"));
             button->setCheckable(true);
             button->setChecked(true);
             button->setCursor(Qt::PointingHandCursor);
             button->setMinimumHeight(36);
+            enableAppNameCopy(button, title);
             connect(button, &QPushButton::clicked, this, [this, key]() {
                 emit groupSelected(key);
             });
@@ -351,6 +369,7 @@ void SidebarWidget::renderGroups()
             button->setMinimumHeight(30);
             button->setToolTip(QStringLiteral("%1\n%2\n状态：%3\napp_id: %4")
                                    .arg(title, pkgName, subtitle, app.value(QStringLiteral("app_id")).toString()));
+            enableAppNameCopy(button, title);
             connect(button, &QPushButton::clicked, this, [this, app, appId]() {
                 m_selectedOnlineAppId = appId;
                 renderGroups();
@@ -366,6 +385,7 @@ void SidebarWidget::renderGroups()
             button->setCheckable(true);
             button->setChecked(true);
             button->setCursor(Qt::PointingHandCursor);
+            enableAppNameCopy(button, title);
             connect(button, &QPushButton::clicked, this, [this, key = currentGroup.value(QStringLiteral("key")).toString()]() {
                 emit groupSelected(key);
             });

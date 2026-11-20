@@ -439,6 +439,7 @@ void MainWindow::buildUi()
     m_titleLabel = new QLabel(workspace);
     m_titleLabel->setObjectName(QStringLiteral("PageTitle"));
     m_titleLabel->setTextFormat(Qt::PlainText);
+    m_titleLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     m_titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     header->addWidget(m_titleLabel, 1);
 

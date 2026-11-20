@@ -353,6 +353,7 @@ def build_submit_payload(
 
     if existing_app_detail is not None:
         overrides = existing_app_overrides or {}
+        origin_pkgs = merge_origin_pkgs(existing_app_detail, [origin_pkg])
         app_info = {
             "app_lan_infos": build_reused_lan_infos(
                 existing_app_detail,
@@ -401,12 +402,12 @@ def build_submit_payload(
                 fit_system_codes=[str(platform.code)],
                 fit_baseline_ids=baseline_values,
                 fit_unsupported_ids=[],
-                fit_arch_codes=[str(arch.code)],
+                fit_arch_codes=[row["pkg_arch"] for row in origin_pkgs if row["pkg_arch"]],
                 region_codes=[region_code],
                 fit_cpu_clip_codes=list(cpu_clip_codes) if cpu_clip_codes is not None else None,
                 fit_motherboard_codes=list(motherboard_codes) if motherboard_codes is not None else None,
             ),
-            "app_origin_pkgs": merge_origin_pkgs(existing_app_detail, [origin_pkg]),
+            "app_origin_pkgs": origin_pkgs,
         }
     else:
         screenshots = uploads["screenshots"]

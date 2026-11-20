@@ -3,15 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from appstore.models import UploadedFileRef
+from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from appstore.translation import LANGUAGE_LABELS
 
 
-_PRESERVED_ORIGIN_PKG_KEYS = (
-    "id",
-    "app_id",
-    "appId",
-    "app_info_id",
-    "appInfoId",
+_ORIGIN_PKG_ROW_ID_KEYS = (
     "app_origin_pkg_id",
     "appOriginPkgId",
     "origin_pkg_id",
@@ -20,6 +16,15 @@ _PRESERVED_ORIGIN_PKG_KEYS = (
     "packageId",
     "pkg_id",
     "pkgId",
+    "id",
+)
+
+_PRESERVED_ORIGIN_PKG_KEYS = (
+    *_ORIGIN_PKG_ROW_ID_KEYS,
+    "app_id",
+    "appId",
+    "app_info_id",
+    "appInfoId",
 )
 
 
@@ -365,7 +370,17 @@ def build_reused_fit_info(
     }
 
 
+def origin_pkg_arch(origin_pkg: dict) -> tuple[str, str]:
+    code = _text(origin_pkg.get("pkg_arch")) or _text(origin_pkg.get("pkgArchCode")) or _text(origin_pkg.get("arch"))
+    label = _text(origin_pkg.get("pkgArch")) or _text(origin_pkg.get("pkg_arch_label"))
+    arch = ARCHITECTURES.get(normalize_package_arch(code or label))
+    if arch is None:
+        return code, label
+    return arch.code, label or arch.label
+
+
 def normalize_origin_pkg(origin_pkg: dict) -> dict:
+    arch_code, arch_label = origin_pkg_arch(origin_pkg)
     sup_sys_codes = list(_csv_tokens(origin_pkg.get("supSys")))
     if not sup_sys_codes:
         sup_sys_codes = _code_items(origin_pkg.get("system_platform"))
@@ -387,8 +402,8 @@ def normalize_origin_pkg(origin_pkg: dict) -> dict:
     normalized = {
         "pkg_name": _text(origin_pkg.get("pkg_name")),
         "pkg_version": _text(origin_pkg.get("pkg_version")),
-        "pkg_arch": _text(origin_pkg.get("pkg_arch")),
-        "pkgArch": _text(origin_pkg.get("pkgArch")),
+        "pkg_arch": arch_code,
+        "pkgArch": arch_label,
         "pkgType": origin_pkg.get("pkgType"),
         "pkg_mode": origin_pkg.get("pkg_mode", 0) or 0,
         "pkgChannel": origin_pkg.get("pkgChannel"),
@@ -431,7 +446,7 @@ def _origin_pkg_package_identity(origin_pkg: dict) -> tuple[str, str, str]:
 
 
 def _origin_pkg_persistent_identity(origin_pkg: dict) -> tuple[str, str]:
-    for key in _PRESERVED_ORIGIN_PKG_KEYS:
+    for key in _ORIGIN_PKG_ROW_ID_KEYS:
         value = _text(origin_pkg.get(key))
         if value:
             return key, value
@@ -487,7 +502,12 @@ def merge_origin_pkgs(existing_app_detail: dict | None, new_origin_pkgs: list[di
         replacement_codes = {_text(code) for code in (normalized.get("system_platform") or []) if _text(code)}
         next_merged: list[dict] = []
         for index, existing in enumerate(merged):
-            if persistent_identity[0] and _origin_pkg_persistent_identity(existing) == persistent_identity:
+            if (
+                persistent_identity[0]
+                and _origin_pkg_persistent_identity(existing) == persistent_identity
+                and existing["pkg_arch"] == normalized["pkg_arch"]
+                and _text(existing["pkgType"]) == _text(normalized["pkgType"])
+            ):
                 next_merged.append(normalized)
                 next_merged.extend(merged[index + 1 :])
                 break

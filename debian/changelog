@@ -1,3 +1,10 @@
+com.uniontech.utpublisher (0.1.4) unstable; urgency=medium
+
+  * Preserve loongarch64 and loong64 packages when updating an application.
+  * Allow copying full application names from the sidebar and detail title.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Fri, 20 Nov 2026 17:18:43 +0800
+
 com.uniontech.utpublisher (0.1.3) unstable; urgency=medium
 
   * Use direct account and QR login without headless Chromium.
