@@ -52,6 +52,10 @@ class _FakeSession:
         self.calls.append(("POST", url, payload))
         return self._responses.pop(0)
 
+    def delete(self, url: str, **kwargs):
+        self.calls.append(("DELETE", url, kwargs or None))
+        return self._responses.pop(0)
+
     def close(self) -> None:
         pass
 
@@ -489,6 +493,44 @@ class ClientSessionTests(unittest.TestCase):
         self.assertEqual(session.calls[0][0], "GET")
         self.assertIn("/store-dev-app/adapt-info/", session.calls[0][1])
         self.assertEqual(session.calls[0][2]["timeout"], REQUEST_TIMEOUT)
+
+    def test_delete_draft_targets_the_revision_and_checks_its_status(self) -> None:
+        for status in (-99, 101):
+            with self.subTest(status=status):
+                session = _FakeSession([
+                    _FakeResponse(json_data={"status": 200, "datas": {
+                        "app_basic_info": {"id": "draft-revision", "app_id": "published-app", "status": status},
+                    }}),
+                    _FakeResponse(json_data={"status": 200}),
+                ])
+                client = AppStoreClient(session=session)
+                if status == -99:
+                    client.delete_draft("draft-revision")
+                    self.assertEqual([call[0] for call in session.calls], ["GET", "DELETE"])
+                    self.assertTrue(session.calls[1][1].endswith("/store-dev-app/app/draft-revision"))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "草稿状态已变化"):
+                        client.delete_draft("draft-revision")
+                    self.assertEqual([call[0] for call in session.calls], ["GET"])
+                self.assertTrue(session.calls[0][1].endswith("/store-dev-app/app/draft-revision/detail"))
+
+    def test_update_draft_posts_with_the_original_draft_id(self) -> None:
+        session = _FakeSession([_FakeResponse(json_data={"status": 200})])
+        client = AppStoreClient(session=session)
+        payload = {
+            "operate_type": -99,
+            "app_info": {"app_basic_info": {"id": "draft-revision", "app_id": "published-app", "status": -99}},
+        }
+
+        with self.assertRaises(PayloadBuildError):
+            client.update_draft("published-app", payload)
+        self.assertEqual(session.calls, [])
+
+        self.assertEqual(client.update_draft("draft-revision", payload), {"status": 200})
+        method, url, request = session.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertTrue(url.endswith("/store-dev-app/app"))
+        self.assertEqual(request, {"json": payload, "timeout": REQUEST_TIMEOUT})
 
     def test_build_requests_session_ignores_refresh_tokens_for_api_headers(self) -> None:
         session = build_requests_session(

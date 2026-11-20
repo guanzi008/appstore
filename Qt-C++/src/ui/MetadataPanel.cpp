@@ -477,9 +477,11 @@ void MetadataPanel::renderPackages()
     }
     QString selectedPath = effectivePackagePath(m_group, m_selectedPackagePath);
     m_selectedPackagePath = selectedPath;
+    const bool draft = !m_group.value(QStringLiteral("draft_detail_id")).toString().isEmpty();
     for (const QJsonValue &value : packages) {
         const QJsonObject package = value.toObject();
         const QString path = package.value(QStringLiteral("path")).toString().trimmed();
+        const bool canRemove = draft && !package.value(QStringLiteral("origin_id")).toString().isEmpty();
         auto *button = new QPushButton(packageTitle(package), this);
         button->setProperty("class", QStringLiteral("PackageRow"));
         button->setCheckable(true);
@@ -496,13 +498,18 @@ void MetadataPanel::renderPackages()
             renderPackages();
             emit packageSelected(path);
         });
-        connect(button, &QPushButton::customContextMenuRequested, this, [this, button, path](const QPoint &pos) {
+        connect(button, &QPushButton::customContextMenuRequested, this, [this, button, path, canRemove](const QPoint &pos) {
             if (path.isEmpty()) {
                 return;
             }
             QMenu menu(button);
             QAction *editTargets = menu.addAction(QStringLiteral("调整适配范围"));
+            QAction *remove = canRemove ? menu.addAction(QStringLiteral("移出草稿")) : nullptr;
             const QAction *selectedAction = menu.exec(button->mapToGlobal(pos));
+            if (remove != nullptr && selectedAction == remove) {
+                emit draftPackageRemoveRequested(path);
+                return;
+            }
             if (selectedAction != editTargets) {
                 return;
             }

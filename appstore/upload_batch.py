@@ -32,7 +32,7 @@ from appstore.models import AppRecord, DebPackageInfo, LoadedManifest, PackageRe
 from appstore.platform_policy import decide_execution_mode
 from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
 from appstore.submission import PKG_TYPE_MAP, submit_grouped_release, validate_release_group
-from appstore.update_payload import normalize_origin_pkg
+from appstore.update_payload import draft_detail_id, normalize_origin_pkg
 
 
 @dataclass(frozen=True)
@@ -213,6 +213,9 @@ def _validate_submit_response(response, action: str) -> dict | list:
 
 
 def _submit_payload(client, payload: dict) -> dict:
+    draft_id = draft_detail_id(payload.get("app_info"))
+    if draft_id:
+        return client.update_draft(draft_id, payload)
     if hasattr(client, "submit_payload"):
         response = client.submit_payload(payload)
         if isinstance(response, dict):

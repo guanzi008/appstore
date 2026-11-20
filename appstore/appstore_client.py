@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from urllib.parse import quote
 
 import requests
 
@@ -14,6 +15,7 @@ from appstore.update_payload import (
     build_reused_basic_info,
     build_reused_fit_info,
     build_reused_lan_infos,
+    draft_detail_id,
     merge_origin_pkgs,
     normalize_website_for_submit,
 )
@@ -456,7 +458,8 @@ def build_submit_payload(
         "app_info": app_info,
     }
     if target_app_id:
-        payload["app_id"] = target_app_id
+        if not draft_detail_id(existing_app_detail):
+            payload["app_id"] = target_app_id
         if existing_app_detail is not None and not app_info["app_basic_info"].get("app_id"):
             app_info["app_basic_info"]["app_id"] = target_app_id
     return payload
@@ -690,7 +693,7 @@ class AppStoreClient:
     def get_app_detail(self, detail_id: str) -> dict:
         payload = self._ensure_ok(
             self.session.get(
-                f"{BASE}/store-dev-app/app/{detail_id}/detail",
+                f"{BASE}/store-dev-app/app/{quote(str(detail_id), safe='')}/detail",
                 timeout=REQUEST_TIMEOUT,
             ),
             "get_app_detail",
@@ -702,15 +705,32 @@ class AppStoreClient:
             raise AppStoreProtocolError(f"get_app_detail returned unexpected payload: {payload}")
         return datas
 
+    def delete_draft(self, detail_id: str) -> None:
+        detail_id = detail_id.strip()
+        if not detail_id or draft_detail_id(self.get_app_detail(detail_id)) != detail_id:
+            raise RuntimeError("草稿状态已变化，请刷新应用列表后重试。")
+        self._ensure_ok(
+            self.session.delete(f"{BASE}/store-dev-app/app/{quote(detail_id, safe='')}", timeout=REQUEST_TIMEOUT),
+            "delete_draft",
+        )
+
     def submit_payload(self, payload: dict) -> dict:
+        return self._write_app_payload(payload, "submit_app")
+
+    def update_draft(self, detail_id: str, payload: dict) -> dict:
+        if not detail_id or draft_detail_id(payload.get("app_info")) != detail_id:
+            raise PayloadBuildError("草稿更新需要匹配的草稿记录 ID。")
+        return self._write_app_payload(payload, "update_draft")
+
+    def _write_app_payload(self, payload: dict, action: str) -> dict:
         response = self.session.post(
             f"{BASE}/store-dev-app/app",
             json=payload,
             timeout=REQUEST_TIMEOUT,
         )
-        validated = self._ensure_ok(response, "submit_app")
+        validated = self._ensure_ok(response, action)
         if not isinstance(validated, dict):
-            raise AppStoreProtocolError(f"submit_app returned unexpected payload: {validated}")
+            raise AppStoreProtocolError(f"{action} returned unexpected payload: {validated}")
         return validated
 
     def upload_file_bytes(self, filename: str, data: bytes, upload_type: str) -> UploadedFileRef:

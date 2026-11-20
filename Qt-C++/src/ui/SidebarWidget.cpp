@@ -100,7 +100,7 @@ QString onlineAppSubtitle(const QJsonObject &app)
         return status;
     }
     const QString code = app.value(QStringLiteral("status")).toString().trimmed();
-    if (code == QStringLiteral("1")) {
+    if (code == QStringLiteral("-99") || code == QStringLiteral("1")) {
         return QStringLiteral("草稿");
     }
     if (code == QStringLiteral("2")) {
@@ -370,6 +370,14 @@ void SidebarWidget::renderGroups()
             button->setToolTip(QStringLiteral("%1\n%2\n状态：%3\napp_id: %4")
                                    .arg(title, pkgName, subtitle, app.value(QStringLiteral("app_id")).toString()));
             enableAppNameCopy(button, title);
+            const QString detailId = AppJson::stringValue(app, QStringLiteral("detail_id"), app.value(QStringLiteral("id")).toString());
+            if (app.value(QStringLiteral("status")).toString() == QStringLiteral("-99") && !detailId.isEmpty()) {
+                auto *deleteDraft = new QAction(QStringLiteral("删除草稿"), button);
+                connect(deleteDraft, &QAction::triggered, this, [this, detailId, title]() {
+                    emit draftDeleteRequested(detailId, title);
+                });
+                button->addAction(deleteDraft);
+            }
             connect(button, &QPushButton::clicked, this, [this, app, appId]() {
                 m_selectedOnlineAppId = appId;
                 renderGroups();

@@ -33,10 +33,11 @@ public:
     void setStepStates(StepState parse, StepState capture, StepState wait, StepState submit);
     void setStatusText(const QString &text);
     void setBusy(bool busy);
-    void setPublishControlsVisible(bool visible);
+    void setPublishControlsVisible(bool visible, bool draft);
 
 signals:
     void submitRequested();
+    void draftSaveRequested();
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -53,5 +54,6 @@ private:
     QLabel *m_waitStepLabel = nullptr;
     QLabel *m_submitStepLabel = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QPushButton *m_saveDraftButton = nullptr;
     QPushButton *m_submitButton = nullptr;
 };

@@ -65,6 +65,12 @@ WorkflowBar::WorkflowBar(QWidget *parent)
     m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     layout->addWidget(m_statusLabel, 1, Qt::AlignVCenter);
 
+    m_saveDraftButton = new QPushButton(QStringLiteral("保存草稿"), this);
+    m_saveDraftButton->setFixedHeight(38);
+    m_saveDraftButton->setCursor(Qt::PointingHandCursor);
+    connect(m_saveDraftButton, &QPushButton::clicked, this, &WorkflowBar::draftSaveRequested);
+    layout->addWidget(m_saveDraftButton, 0, Qt::AlignVCenter);
+
     m_submitButton = new QPushButton(QStringLiteral("提交到商店"), this);
     m_submitButton->setObjectName(QStringLiteral("PrimaryAction"));
     m_submitButton->setCursor(Qt::PointingHandCursor);
@@ -115,12 +121,14 @@ void WorkflowBar::setStatusText(const QString &text)
 
 void WorkflowBar::setBusy(bool busy)
 {
+    m_saveDraftButton->setEnabled(!busy);
     m_submitButton->setEnabled(!busy);
 }
 
-void WorkflowBar::setPublishControlsVisible(bool visible)
+void WorkflowBar::setPublishControlsVisible(bool visible, bool draft)
 {
     m_steps->setVisible(visible);
+    m_saveDraftButton->setVisible(visible && draft);
     m_submitButton->setVisible(visible);
     setFixedHeight(visible ? 56 : 44);
     layout()->activate();

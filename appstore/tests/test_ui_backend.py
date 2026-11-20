@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from appstore.appstore_client import build_requests_session
-from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
+from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine, UploadedFileRef
 from appstore.capture_workflow import CapturePackageResult
 from appstore.session_state import BrowserSessionState, SessionStateStore
 from ui.assets import AssetBundle, _prepare_icon, _prepare_screenshot, detect_asset_candidates, preprocess_assets
@@ -40,6 +40,7 @@ from ui.cpp_bridge import (
     _refresh_group_system_lines,
     _sync_existing_detail_assets,
     _targets_for_auto_matched_packages,
+    command_analyze,
     command_login_credentials,
     command_save_preferences,
 )
@@ -424,6 +425,84 @@ class UiPreferencesTests(unittest.TestCase):
 
 
 class UiCppBridgeOnlineDetailTests(unittest.TestCase):
+    def test_import_appends_local_packages_and_keeps_workspace_edits(self) -> None:
+        old_path = Path("/tmp/demo_2.0_loongarch64.deb")
+        new_path = Path("/tmp/demo_2.0_loong64.deb")
+        arm_path = "online://draft/arm64"
+        online_loong_path = "online://draft/loong64"
+        first_batch = _make_package_group(old_path, pkg_name="demo", pkg_version="2.0", pkg_arch="loongarch64")
+        second_batch = _make_package_group(new_path, pkg_name="demo", pkg_version="2.0", pkg_arch="loong64")
+        combined = PackageGroup(packages=first_batch.packages + second_batch.packages)
+        local_loongarch = {"path": str(old_path), "arch": "loongarch64"}
+        local_loong = {"path": str(new_path), "arch": "loong64"}
+        local_target = {"package_path": str(old_path), "package_arch": "loongarch64", "code": "2", "selected": False}
+        group = {
+            "key": "demo|2.0|deb|deb", "pkg_name": "demo", "pkg_version": "2.0",
+            "package_family": "deb", "package_format": "deb",
+            "packages": [local_loongarch, local_loong],
+            "targets": [
+                local_target,
+                {"package_path": str(new_path), "package_arch": "loong64", "code": "21", "selected": False},
+            ],
+        }
+        previous = {
+            **group,
+            "key": "online|app-id",
+            "online_only": True,
+            "pkg_version": "1.0",
+            "submission_mode": "update",
+            "selected_match_app_id": "app-id",
+            "existing_matches": [{"app_id": "app-id", "detail_id": "draft-revision"}],
+            "draft_detail_id": "draft-revision",
+            "removed_draft_package_ids": ["removed-row"],
+            "app_name_zh": "编辑后的名称",
+            "screenshot_paths": ["/tmp/edited-shot.png"],
+            "packages": [
+                {"path": arm_path, "arch": "arm64", "online": True},
+                {"path": online_loong_path, "arch": "loong64", "online": True},
+            ],
+            "targets": [
+                {"package_path": arm_path, "package_arch": "arm64", "code": "21", "selected": True},
+                {"package_path": online_loong_path, "package_arch": "loong64", "code": "21", "selected": True},
+            ],
+        }
+        first_group = {**group, "packages": [local_loongarch], "targets": [local_target]}
+        with (
+            patch("ui.cpp_bridge.try_restore_cached_login", return_value=None),
+            patch("ui.cpp_bridge._load_capabilities", return_value=None),
+            patch("ui.cpp_bridge.PreferenceStore"),
+            patch("ui.cpp_bridge.analyze_package_group", side_effect=(first_batch, combined)) as analyze,
+            patch("ui.cpp_bridge._group_to_json", side_effect=(first_group, group)),
+        ):
+            imported = command_analyze({"package_paths": [str(old_path)], "current_group": previous})["groups"][0]
+            self.assertCountEqual(
+                [package["path"] for package in imported["packages"]],
+                [str(old_path), arm_path, online_loong_path],
+            )
+            for target in imported["targets"]:
+                if target["package_path"] == str(old_path):
+                    target.update(selected=True, selected_baseline_ids=["1074-id"])
+            result = command_analyze({
+                "package_paths": [str(new_path), str(new_path)],
+                "current_group": imported,
+            })["groups"][0]
+
+        self.assertEqual([call.args[0] for call in analyze.call_args_list], [[old_path], [old_path, new_path]])
+        self.assertCountEqual([package["path"] for package in result["packages"]], [str(old_path), str(new_path), arm_path])
+        self.assertFalse(result["online_only"])
+        self.assertEqual(result["pkg_version"], "2.0")
+        self.assertEqual(result["submission_mode"], "update")
+        self.assertEqual(result["app_name_zh"], "编辑后的名称")
+        self.assertEqual(result["screenshot_paths"], ["/tmp/edited-shot.png"])
+        self.assertEqual(result["draft_detail_id"], "draft-revision")
+        self.assertEqual(result["existing_matches"], previous["existing_matches"])
+        self.assertEqual(result["removed_draft_package_ids"], ["removed-row"])
+        targets = {row["package_path"]: row for row in result["targets"]}
+        self.assertTrue(targets[str(old_path)]["selected"])
+        self.assertEqual(targets[str(old_path)]["selected_baseline_ids"], ["1074-id"])
+        self.assertTrue(targets[str(new_path)]["selected"])
+        self.assertTrue(targets[arm_path]["selected"])
+
     def test_online_versions_stay_with_their_package_and_line(self) -> None:
         cache = CapabilityCache(
             generated_at="2026-11-20T16:00:00+08:00",
@@ -1345,6 +1424,100 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
         self.assertEqual(result.rows[0]["status"], "submitted")
         self.assertIsNotNone(client.payload)
         self.assertEqual(client.payload["app_info"]["app_origin_pkgs"][0]["file_save_key"], "existing-x86")
+
+    def test_save_draft_replaces_and_removes_packages_by_revision(self) -> None:
+        draft_id = "draft-revision"
+        app_id = "published-app"
+        detail = {
+            "app_basic_info": {"id": draft_id, "app_id": app_id, "status": -99, "category_id": 1},
+            "app_lan_infos": [{"lan": "zh_CN", "name": "Demo"}],
+            "app_origin_pkgs": [
+                {
+                    "id": row_id, "pkg_name": "demo", "pkg_version": "1.0", "pkg_arch": arch,
+                    "pkgType": 11, "supSys": "21", "supBlineVer": "2500", "file_save_key": row_id,
+                }
+                for row_id, arch in (("arm-row", "3"), ("old-loongarch", "5"), ("other-loong", "6"))
+            ],
+        }
+        cache = CapabilityCache(
+            generated_at="2026-04-27T18:00:00+08:00",
+            deb_system_lines={"21": SystemLine("21", "社区版V25", "deb")},
+            linglong_system_lines={},
+            baseline_options={"deb:21": (BaselineOption("21", "2500", "25.0.0"),)},
+        )
+        client = _NoUploadSubmitClient()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "demo_2.0_loongarch64.deb"
+            path.write_bytes(b"new-package")
+            plan = BatchGroupSubmissionPlan(
+                package_group=_make_package_group(path, pkg_name="demo", pkg_version="2.0", pkg_arch="loongarch64"),
+                submission_mode="update",
+                selected_match=StoreAppMatch(app_id, draft_id, "demo", "Demo"),
+                app_name_zh="Demo", website="", short_desc_zh="", full_desc_zh="",
+                category_id="1", region_codes=("1",), asset_dir=None,
+                save_draft=True, expected_draft_id=draft_id, removed_draft_package_ids=("arm-row",),
+            )
+            with (
+                patch.object(client, "get_app_detail", create=True, return_value=detail) as fetch,
+                patch.object(client, "upload_file_bytes", return_value=UploadedFileRef("temppkg", "new-key", 11, "hash")),
+                patch.object(client, "update_draft", create=True, return_value={"datas": {"app_id": app_id}}) as update,
+                patch.object(client, "submit_payload", side_effect=AssertionError("expected draft update")),
+            ):
+                result = submit_applications_batch(
+                    LoginContext(client, "demo", None, "cached", False),
+                    plans=(plan,), cache=cache, note="", release_key="stable", pkg_channel="stable",
+                    selected_targets=(_target_option(path, "21", "2500"),), output_dir=root / "output",
+                )
+
+        fetch.assert_called_once_with(draft_id)
+        self.assertEqual(result.rows[0]["status"], "submitted", result.rows[0]["message"])
+        update.assert_called_once()
+        detail_id, payload = update.call_args.args
+        self.assertEqual(detail_id, draft_id)
+        self.assertEqual(payload["operate_type"], -99)
+        self.assertNotIn("app_id", payload)
+        app_info = payload["app_info"]
+        self.assertEqual(app_info["app_basic_info"]["id"], draft_id)
+        self.assertEqual(app_info["app_basic_info"]["app_id"], app_id)
+        self.assertEqual(
+            {row["id"]: row["file_save_key"] for row in app_info["app_origin_pkgs"]},
+            {"old-loongarch": "new-key", "other-loong": "other-loong"},
+        )
+        self.assertCountEqual(app_info["app_fit_info"]["arch"], [{"code": 5}, {"code": 6}])
+
+    def test_draft_submission_stops_before_upload_if_revision_is_no_longer_a_draft(self) -> None:
+        draft_id = "draft-revision"
+        app_id = "published-app"
+        client = _NoUploadSubmitClient()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = BatchGroupSubmissionPlan(
+                package_group=_make_package_group(root / "demo_2.0_amd64.deb", pkg_name="demo", pkg_version="2.0"),
+                submission_mode="update",
+                selected_match=StoreAppMatch(app_id, draft_id, "demo", "Demo"),
+                app_name_zh="Demo", website="", short_desc_zh="", full_desc_zh="",
+                category_id="1", region_codes=("1",), asset_dir=None,
+                expected_draft_id=draft_id,
+            )
+            with (
+                patch.object(client, "get_app_detail", create=True, return_value={
+                    "app_basic_info": {"id": draft_id, "app_id": app_id, "status": 101},
+                }),
+                patch.object(client, "upload_file_bytes") as upload,
+                patch.object(client, "submit_payload") as submit,
+                patch.object(client, "update_draft", create=True) as update,
+            ):
+                result = submit_applications_batch(
+                    LoginContext(client, "demo", None, "cached", False),
+                    plans=(plan,), cache=object(), note="", release_key="stable", pkg_channel="stable",
+                    selected_targets=(), output_dir=root / "output",
+                )
+
+        self.assertIn("草稿状态已变化", result.rows[0]["message"])
+        upload.assert_not_called()
+        submit.assert_not_called()
+        update.assert_not_called()
 
     def test_submit_applications_batch_new_reuses_prepared_assets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -9,12 +9,14 @@ from appstore.capabilities import CapabilityCache, system_lines_for_arch
 from appstore.models import AppRecord, PackageInfo, PackageRecord, ReleaseRecord, TargetRecord, UploadedFileRef
 from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
 from appstore.update_payload import (
+    DRAFT_STATUS,
     baseline_ids_from_value,
     baseline_id_objects,
     baseline_system_id_objects,
     build_reused_basic_info,
     build_reused_fit_info,
     build_reused_lan_infos,
+    draft_detail_id,
     extract_detail_data,
     merge_origin_pkgs,
     normalize_website_for_submit,
@@ -298,7 +300,11 @@ def build_release_payload(
     localized_lan_texts: dict[str, dict[str, str]] | None = None,
     desired_lans: tuple[str, ...] | None = None,
     developer_name: str = "",
+    save_draft: bool = False,
 ) -> dict:
+    draft_id = draft_detail_id(existing_app_detail)
+    if save_draft and not draft_id:
+        raise ValidationError("请选择要保存的现有草稿。")
     fit_system_codes: list[str] = []
     fit_baseline_ids: list[str] = []
     fit_unsupported_ids: list[str] = []
@@ -515,11 +521,12 @@ def build_release_payload(
             "app_origin_pkgs": origin_pkgs,
         }
     payload = {
-        "operate_type": 52,
+        "operate_type": int(DRAFT_STATUS) if save_draft else 52,
         "app_info": app_info,
     }
     if target_app_id:
-        payload["app_id"] = target_app_id
+        if not draft_id:
+            payload["app_id"] = target_app_id
         if existing_app_detail is not None and not app_info["app_basic_info"].get("app_id"):
             app_info["app_basic_info"]["app_id"] = target_app_id
     return payload
@@ -536,6 +543,7 @@ def submit_grouped_release(
     localized_lan_texts: dict[str, dict[str, str]] | None = None,
     desired_lans: tuple[str, ...] | None = None,
     developer_name: str = "",
+    save_draft: bool = False,
 ) -> dict:
     developer_name = developer_name.strip()
     if existing_app_detail is None and not developer_name:
@@ -555,5 +563,9 @@ def submit_grouped_release(
         localized_lan_texts=localized_lan_texts,
         desired_lans=desired_lans,
         developer_name=developer_name,
+        save_draft=save_draft,
     )
+    draft_id = draft_detail_id(existing_app_detail)
+    if draft_id:
+        return client.update_draft(draft_id, payload)
     return client.submit_payload(payload)

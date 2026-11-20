@@ -29,6 +29,7 @@ signals:
     void loadMoreMyAppsRequested();
     void groupSelected(const QString &groupKey);
     void onlineAppSelected(const QJsonObject &app);
+    void draftDeleteRequested(const QString &detailId, const QString &appName);
     void settingsRequested();
 
 private:

@@ -7,6 +7,8 @@ from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from appstore.translation import LANGUAGE_LABELS
 
 
+DRAFT_STATUS = "-99"
+
 _ORIGIN_PKG_ROW_ID_KEYS = (
     "app_origin_pkg_id",
     "appOriginPkgId",
@@ -190,6 +192,13 @@ def extract_detail_data(existing_app_detail: dict | None) -> dict:
     if isinstance(datas, dict):
         return datas
     return existing_app_detail
+
+
+def draft_detail_id(existing_app_detail: dict | None) -> str:
+    basic_info = extract_detail_data(existing_app_detail).get("app_basic_info") or {}
+    if _text(basic_info.get("status")) == DRAFT_STATUS:
+        return _text(basic_info.get("id"))
+    return ""
 
 
 def build_reused_lan_infos(

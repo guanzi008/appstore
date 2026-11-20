@@ -1,3 +1,17 @@
+com.uniontech.utpublisher (0.1.6) unstable; urgency=medium
+
+  * Append compatible package imports and preserve workspace edits.
+  * Route draft saves and review submissions through the existing draft revision.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Fri, 20 Nov 2026 19:02:38 +0800
+
+com.uniontech.utpublisher (0.1.5) unstable; urgency=medium
+
+  * Save package and metadata changes to the selected store draft.
+  * Support removing packages from drafts and deleting draft revisions.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Fri, 20 Nov 2026 18:29:04 +0800
+
 com.uniontech.utpublisher (0.1.4) unstable; urgency=medium
 
   * Preserve loongarch64 and loong64 packages when updating an application.

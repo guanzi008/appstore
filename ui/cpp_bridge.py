@@ -48,7 +48,7 @@ from ui.backend import (
 from appstore.appstore_client import package_family_from_app_detail, package_format_from_app_detail
 from appstore.capabilities import system_lines_for_arch
 from appstore.platforms import ARCHITECTURES, normalize_package_arch
-from appstore.update_payload import origin_pkg_arch
+from appstore.update_payload import draft_detail_id, origin_pkg_arch
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences, normalize_default_target_ranges
 from appstore.session_state import SessionStateStore
@@ -550,6 +550,7 @@ def _online_packages_from_detail(
         packages.append(
             {
                 "path": _online_package_key(match, item, index, arch_label),
+                "origin_id": _origin_pkg_value(item, "id"),
                 "online": True,
                 "file_name": file_name,
                 "pkg_name": pkg_name,
@@ -707,6 +708,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
     return {
         "key": f"online|{match.app_id or match.detail_id or pkg_name}",
         "online_only": True,
+        "draft_detail_id": draft_detail_id(existing_app_detail),
         "pkg_name": pkg_name,
         "pkg_version": ",".join(version_values),
         "package_family": package_family,
@@ -759,6 +761,21 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
 
 def _normalized_arch_key(value: object) -> str:
     return normalize_package_arch(str(value or ""))
+
+
+def _is_online_package(package: dict) -> bool:
+    return bool(package.get("online")) or str(package.get("path", "")).strip().startswith("online://")
+
+
+def _local_package_paths(group: dict) -> list[Path]:
+    paths: list[Path] = []
+    for package in group.get("packages", []):
+        if not isinstance(package, dict) or _is_online_package(package):
+            continue
+        path = str(package.get("path", "")).strip()
+        if path:
+            paths.append(Path(path).expanduser().resolve())
+    return paths
 
 
 def _dedupe_json_strings(values: list[object]) -> list[str]:
@@ -859,6 +876,48 @@ def _local_packages_with_online_icon(base_group: dict, online_group: dict) -> li
     return packages
 
 
+def _append_imported_packages(group: dict, previous: dict) -> dict:
+    previous_packages = {
+        package["path"]: package
+        for package in previous.get("packages", [])
+        if isinstance(package, dict) and package.get("path")
+    }
+    previous_targets = [row for row in previous.get("targets", []) if isinstance(row, dict)]
+    online_packages = [package for package in previous_packages.values() if _is_online_package(package)]
+    online_paths = {package["path"] for package in online_packages}
+    online_group = {
+        "packages": online_packages,
+        "targets": [row for row in previous_targets if row.get("package_path") in online_paths],
+        "icon_path": previous.get("icon_path") if previous.get("auto_matched_online_app") or online_packages else "",
+    }
+    packages = _packages_with_online_remainder(group, online_group)
+    targets = _targets_for_auto_matched_packages(group, online_group, packages)
+    retained_paths: set[str] = set()
+    for package in packages:
+        old_package = previous_packages.get(package.get("path"))
+        if old_package and _normalized_arch_key(old_package.get("arch")) == _normalized_arch_key(package.get("arch")):
+            retained_paths.add(package["path"])
+            if old_package.get("icon_path"):
+                package["icon_path"] = old_package["icon_path"]
+
+    retained_targets = [row for row in previous_targets if row.get("package_path") in retained_paths]
+    retained_target_paths = {row["package_path"] for row in retained_targets}
+    arches = _dedupe_json_strings([package.get("arch") for package in packages])
+    merged = {**group, **previous}
+    for key in ("key", "pkg_name", "pkg_version", "package_family", "package_format"):
+        merged[key] = group[key]
+    merged.update(
+        online_only=False,
+        packages=packages,
+        pkg_arches=arches,
+        targets=retained_targets + [row for row in targets if row.get("package_path") not in retained_target_paths],
+        adapt_arch_codes=_dedupe_json_strings([store_arch_code(arch) for arch in arches]),
+        adapt_arch_label=", ".join(arches),
+        asset_warnings=_dedupe_json_strings([*(previous.get("asset_warnings") or []), *(group.get("asset_warnings") or [])]),
+    )
+    return merged
+
+
 def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> dict:
     merged = dict(base_group)
     always_copy_keys = (
@@ -880,6 +939,7 @@ def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> di
         "existing_matches",
         "selected_match_app_id",
         "submission_mode",
+        "draft_detail_id",
         "cpu_clip_options",
         "cpu_clip_codes",
         "motherboard_options",
@@ -1256,7 +1316,7 @@ def _online_package_group_from_payload(group_payload: dict) -> PackageGroup | No
         if not isinstance(package_payload, dict):
             continue
         path_value = str(package_payload.get("path", "")).strip()
-        if not path_value.startswith("online://") and not bool(package_payload.get("online", False)):
+        if not _is_online_package(package_payload):
             continue
         package_path = _payload_package_path_identity(path_value or f"online://{index}")
         pkg_name = str(package_payload.get("pkg_name", "") or group_payload.get("pkg_name", "")).strip()
@@ -1286,16 +1346,7 @@ def _online_package_group_from_payload(group_payload: dict) -> PackageGroup | No
 
 
 def _group_payload_to_package_group(group_payload: dict):
-    package_paths: list[Path] = []
-    for package_payload in group_payload.get("packages", []):
-        if not isinstance(package_payload, dict):
-            continue
-        path_value = str(package_payload.get("path", "")).strip()
-        if not path_value or path_value.startswith("online://") or bool(package_payload.get("online", False)):
-            continue
-        path = Path(path_value).expanduser().resolve()
-        if path.exists():
-            package_paths.append(path)
+    package_paths = [path for path in _local_package_paths(group_payload) if path.exists()]
     if package_paths:
         local_group = analyze_package_group(package_paths)
         online_group = _online_package_group_from_payload(group_payload)
@@ -1411,7 +1462,9 @@ def _group_asset_paths(group_payload: dict) -> tuple[Path | None, tuple[Path, ..
     )
 
 
-def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPlan, tuple[SystemTargetOption, ...]]:
+def _group_payload_to_plan(
+    group_payload: dict, *, save_draft: bool = False,
+) -> tuple[BatchGroupSubmissionPlan, tuple[SystemTargetOption, ...]]:
     package_group = _group_payload_to_package_group(group_payload)
     asset_dir_value = str(group_payload.get("asset_dir", "")).strip()
     asset_dir = Path(asset_dir_value).expanduser().resolve() if asset_dir_value else None
@@ -1450,6 +1503,9 @@ def _group_payload_to_plan(group_payload: dict) -> tuple[BatchGroupSubmissionPla
         else (),
         metadata_edited=bool(group_payload.get("metadata_edited", False)),
         manual_en_edited=bool(group_payload.get("manual_en_edited", False)),
+        save_draft=save_draft,
+        expected_draft_id=str(group_payload.get("draft_detail_id") or "").strip(),
+        removed_draft_package_ids=_dedupe(_code_items(group_payload.get("removed_draft_package_ids"))),
         cpu_clip_codes=_group_payload_selected_codes(
             group_payload,
             "cpu_clip_codes",
@@ -1811,31 +1867,45 @@ def command_analyze(payload: dict) -> dict:
     asset_dir = Path(asset_dir_value).expanduser().resolve() if asset_dir_value else None
     preferred_account = str(payload.get("preferred_account", "")).strip()
     preferred_app_id = str(payload.get("preferred_app_id", "")).strip()
+    previous = payload.get("current_group")
+    if not isinstance(previous, dict):
+        previous = {}
+    previous_paths = _local_package_paths(previous)
+    incoming_paths = [Path(path).expanduser().resolve() for path in package_paths]
+    package_group = analyze_package_group(list(dict.fromkeys(previous_paths + incoming_paths)))
+    same_app = (
+        previous.get("pkg_name") == package_group.pkg_name
+        and previous.get("package_family") == package_group.package_family
+    )
+    if previous.get("draft_detail_id") and not same_app:
+        raise ValueError("安装包的包名或类型与当前草稿不一致。")
+    appended = same_app and bool(previous_paths or previous.get("online_only"))
 
     login_context = try_restore_cached_login(preferred_account)
     capability_cache = _load_capabilities(login_context)
     preferences = PreferenceStore().load()
-    package_group = analyze_package_group([Path(path).expanduser().resolve() for path in package_paths])
-    group_items = [
-        _group_to_json(
-            package_group,
-            login_context=login_context,
-            capability_cache=capability_cache,
-            asset_dir=asset_dir,
-            preferences=preferences,
-            preferred_app_id=preferred_app_id,
-        )
-    ]
+    group = _group_to_json(
+        package_group,
+        login_context=None if appended else login_context,
+        capability_cache=capability_cache,
+        asset_dir=asset_dir,
+        preferences=preferences,
+        preferred_app_id=preferred_app_id,
+    )
+    if appended:
+        group = _append_imported_packages(group, previous)
     return {
         "login": _login_to_json(login_context),
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": _load_categories(login_context),
         "project": {
             "group_count": 1,
-            "package_count": sum(len(item["packages"]) for item in group_items),
+            "package_count": len(group["packages"]),
             "mode": "single",
+            "source_group_key": previous.get("key", ""),
+            "appended": appended,
         },
-        "groups": group_items,
+        "groups": [group],
     }
 
 
@@ -1950,6 +2020,17 @@ def command_fetch_match_defaults(payload: dict) -> dict:
     return result
 
 
+def command_delete_draft(payload: dict) -> dict:
+    detail_id = str(payload.get("detail_id") or "").strip()
+    if not detail_id:
+        raise ValueError("请选择要删除的草稿。")
+    login_context = try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
+    if login_context is None:
+        raise RuntimeError("未找到可用登录态，请先登录。")
+    login_context.client.delete_draft(detail_id)
+    return {"detail_id": detail_id}
+
+
 def command_submit(payload: dict) -> dict:
     preferred_account = str(payload.get("preferred_account", "")).strip()
     logs: list[str] = []
@@ -1980,8 +2061,9 @@ def command_submit(payload: dict) -> dict:
     capability_cache = load_or_sync_capabilities(login_context.client, log=logs.append)
     plans: list[BatchGroupSubmissionPlan] = []
     selected_targets: list[SystemTargetOption] = []
+    save_draft = payload.get("save_draft") is True
     for group_payload in selected_groups:
-        plan, targets = _group_payload_to_plan(group_payload)
+        plan, targets = _group_payload_to_plan(group_payload, save_draft=save_draft)
         plans.append(plan)
         selected_targets.extend(targets)
 
@@ -2006,6 +2088,8 @@ def command_submit(payload: dict) -> dict:
         "capabilities": _capability_cache_to_json(capability_cache),
         "categories": _load_categories(login_context),
         "report": _submission_result_to_json(submission),
+        "saved_draft": save_draft,
+        "draft_detail_id": selected_groups[0].get("draft_detail_id", "") if len(selected_groups) == 1 else "",
         "submitted_group_count": len(plans),
         "logs": logs,
     }
@@ -2027,6 +2111,7 @@ COMMANDS = {
     "preprocess_assets": command_preprocess_assets,
     "capture_screenshots": command_capture_screenshots,
     "fetch_match_defaults": command_fetch_match_defaults,
+    "delete_draft": command_delete_draft,
     "submit": command_submit,
 }
 

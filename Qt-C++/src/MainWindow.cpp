@@ -90,6 +90,9 @@ QString commandBusyText(const QString &command)
     if (command == QStringLiteral("submit")) {
         return QStringLiteral("正在提交，请等待后端返回结果...");
     }
+    if (command == QStringLiteral("delete_draft")) {
+        return QStringLiteral("正在删除草稿...");
+    }
     if (command == QStringLiteral("login_wechat_qr")) {
         return QStringLiteral("正在打开扫码登录窗口...");
     }
@@ -128,6 +131,9 @@ QString commandLabelText(const QString &command)
     if (command == QStringLiteral("submit")) {
         return QStringLiteral("提交");
     }
+    if (command == QStringLiteral("delete_draft")) {
+        return QStringLiteral("删除草稿");
+    }
     if (command == QStringLiteral("login_wechat_qr")) {
         return QStringLiteral("扫码登录");
     }
@@ -152,6 +158,9 @@ QString commandLabelText(const QString &command)
 QString friendlyFailureMessage(const QString &command, const QString &message)
 {
     const QString compactMessage = message.simplified();
+    if (command == QStringLiteral("analyze") && compactMessage.startsWith(QStringLiteral("mixed package "))) {
+        return QStringLiteral("同一组安装包需要相同的包名、版本和类型。点击「我的应用」可开始导入另一组。");
+    }
     if (command == QStringLiteral("capture_screenshots")) {
         if (compactMessage.contains(QStringLiteral("timed out waiting for window"))) {
             return QStringLiteral("自动截图失败：应用已启动但未匹配到窗口。请先手动添加截图，或调整截图流程后重试。");
@@ -304,6 +313,7 @@ QJsonObject copyEditableOnlineFields(QJsonObject target, const QJsonObject &sour
         QStringLiteral("existing_matches"),
         QStringLiteral("selected_match_app_id"),
         QStringLiteral("submission_mode"),
+        QStringLiteral("draft_detail_id"),
         QStringLiteral("cpu_clip_options"),
         QStringLiteral("cpu_clip_codes"),
         QStringLiteral("motherboard_options"),
@@ -370,6 +380,43 @@ QString packageLabel(const QJsonObject &package)
     return arch.isEmpty() ? title : QStringLiteral("%1  ·  %2").arg(title, arch);
 }
 
+QJsonObject withoutDraftPackageRows(QJsonObject group)
+{
+    const QStringList removedIds = AppJson::stringArray(group.value(QStringLiteral("removed_draft_package_ids")).toArray());
+    if (removedIds.isEmpty()) {
+        return group;
+    }
+    QJsonArray packages;
+    QStringList removedPaths;
+    QStringList arches;
+    for (const QJsonValue &value : group.value(QStringLiteral("packages")).toArray()) {
+        const QJsonObject package = value.toObject();
+        const QString path = package.value(QStringLiteral("path")).toString();
+        if (removedIds.contains(package.value(QStringLiteral("origin_id")).toString())) {
+            removedPaths.append(path);
+            continue;
+        }
+        packages.append(value);
+        const QString arch = package.value(QStringLiteral("arch")).toString();
+        if (!arch.isEmpty() && !arches.contains(arch)) {
+            arches.append(arch);
+        }
+    }
+    if (removedPaths.isEmpty()) {
+        return group;
+    }
+    QJsonArray targets;
+    for (const QJsonValue &value : group.value(QStringLiteral("targets")).toArray()) {
+        if (!removedPaths.contains(value.toObject().value(QStringLiteral("package_path")).toString())) {
+            targets.append(value);
+        }
+    }
+    group.insert(QStringLiteral("packages"), packages);
+    group.insert(QStringLiteral("targets"), targets);
+    group.insert(QStringLiteral("pkg_arches"), QJsonArray::fromStringList(arches));
+    return group;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -418,6 +465,7 @@ void MainWindow::buildUi()
     });
     connect(m_sidebar, &SidebarWidget::loadMoreMyAppsRequested, this, &MainWindow::loadMoreMyApps);
     connect(m_sidebar, &SidebarWidget::onlineAppSelected, this, &MainWindow::selectOnlineApp);
+    connect(m_sidebar, &SidebarWidget::draftDeleteRequested, this, &MainWindow::deleteDraft);
     connect(m_sidebar, &SidebarWidget::settingsRequested, this, &MainWindow::openPreferences);
     connect(m_sidebar, &SidebarWidget::groupSelected, this, [this](const QString &key) {
         persistCurrentGroupFromUi();
@@ -498,6 +546,7 @@ void MainWindow::buildUi()
     m_metadataPanel = new MetadataPanel(m_workspaceTabs);
     connect(m_metadataPanel, &MetadataPanel::packageSelected, this, &MainWindow::selectPackage);
     connect(m_metadataPanel, &MetadataPanel::packageTargetEditRequested, this, &MainWindow::editPackageTargets);
+    connect(m_metadataPanel, &MetadataPanel::draftPackageRemoveRequested, this, &MainWindow::removeDraftPackage);
     m_workspaceTabs->addTab(m_metadataPanel, QStringLiteral("资料与安装包"));
 
     auto *assetsPage = new QWidget(m_workspaceTabs);
@@ -544,10 +593,12 @@ void MainWindow::buildUi()
     m_workspaceTabs->addTab(m_publishPage, QStringLiteral("检查与提交"));
 
     m_workflowBar = new WorkflowBar(workspace);
-    connect(m_workflowBar, &WorkflowBar::submitRequested, this, &MainWindow::submitCurrentGroup);
+    connect(m_workflowBar, &WorkflowBar::submitRequested, this, [this]() { submitCurrentGroup(); });
+    connect(m_workflowBar, &WorkflowBar::draftSaveRequested, this, [this]() { submitCurrentGroup(true); });
     workspaceLayout->addWidget(m_workflowBar);
     connect(m_workspaceTabs, &QTabWidget::currentChanged, this, [this]() {
-        m_workflowBar->setPublishControlsVisible(m_workspaceTabs->currentWidget() == m_publishPage);
+        m_workflowBar->setPublishControlsVisible(m_workspaceTabs->currentWidget() == m_publishPage,
+            !m_currentGroup.value(QStringLiteral("draft_detail_id")).toString().isEmpty());
     });
     renderCurrentGroup();
 }
@@ -696,18 +747,40 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
     }
 
     if (command == QStringLiteral("analyze")) {
+        const QJsonObject project = data.value(QStringLiteral("project")).toObject();
+        const QString sourceKey = project.value(QStringLiteral("source_group_key")).toString();
+        if (project.contains(QStringLiteral("source_group_key")) && sourceKey != m_currentGroup.value(QStringLiteral("key")).toString()) {
+            return;
+        }
+        const bool appended = project.value(QStringLiteral("appended")).toBool();
+        if (appended) {
+            persistCurrentGroupFromUi();
+        }
         applySessionData(data);
         m_groups = data.value(QStringLiteral("groups")).toArray();
         if (!m_groups.isEmpty()) {
-            const QJsonObject group = m_groups.first().toObject();
+            QJsonObject group = m_groups.first().toObject();
+            if (appended) {
+                group = m_metadataPanel->groupFromUi(group);
+                for (const QString &key : {QStringLiteral("icon_path"), QStringLiteral("screenshot_paths"),
+                                           QStringLiteral("asset_dir"), QStringLiteral("assets_preprocessed")}) {
+                    if (m_currentGroup.contains(key)) {
+                        group.insert(key, m_currentGroup.value(key));
+                    }
+                }
+            }
             const bool autoMatched = group.value(QStringLiteral("auto_matched_online_app")).toBool(false);
             setCurrentGroup(group);
             m_sidebar->setTaskState(QStringLiteral("parse"), QStringLiteral("done"), autoMatched ? QStringLiteral("自动匹配") : QStringLiteral("当前应用"));
             m_workflowBar->setStepStates(StepState::Done, StepState::Idle, StepState::Idle, StepState::Idle);
-            m_workflowBar->setStatusText(
-                autoMatched
+            if (appended) {
+                m_workflowBar->setStatusText(QStringLiteral("已追加安装包，当前共 %1 个包。")
+                    .arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()));
+            } else {
+                m_workflowBar->setStatusText(autoMatched
                     ? QStringLiteral("解析完成，已按包名和包类型匹配我的应用，并同步线上资料、素材与适配项。")
                     : QStringLiteral("解析完成，已载入当前应用。"));
+            }
             if (m_preprocessAfterImportCheck->isChecked()) {
                 preprocessAssets();
             }
@@ -739,9 +812,22 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         return;
     }
 
+    if (command == QStringLiteral("delete_draft")) {
+        const QString detailId = data.value(QStringLiteral("detail_id")).toString();
+        const QString selectedDetailId = AppJson::stringValue(m_selectedOnlineApp, QStringLiteral("detail_id"),
+            m_selectedOnlineApp.value(QStringLiteral("id")).toString());
+        if (!detailId.isEmpty() && (detailId == selectedDetailId
+            || detailId == m_currentGroup.value(QStringLiteral("draft_detail_id")).toString())) {
+            clearCurrentWorkspace(true);
+        }
+        listMyApps();
+        return;
+    }
+
     if (command == QStringLiteral("submit")) {
         applySessionData(data);
         appendLogs(data.value(QStringLiteral("logs")).toArray());
+        const bool savedDraft = data.value(QStringLiteral("saved_draft")).toBool();
         const QJsonObject report = data.value(QStringLiteral("report")).toObject();
         const QString reportPath = report.value(QStringLiteral("report_path")).toString();
         const int totalCount = submissionTotalCount(report);
@@ -750,11 +836,12 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
             const QString failureMessage = firstSubmissionFailureMessage(report);
             m_sidebar->setTaskState(QStringLiteral("submit"), QStringLiteral("failed"), QStringLiteral("%1/%2 失败").arg(failureCount).arg(totalCount));
             m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Done, StepState::Failed);
-            m_workflowBar->setStatusText(QStringLiteral("提交失败 %1/%2，报告：%3").arg(failureCount).arg(totalCount).arg(reportPath));
+            const QString title = savedDraft ? QStringLiteral("草稿保存失败") : QStringLiteral("提交失败");
+            m_workflowBar->setStatusText(QStringLiteral("%1 %2/%3，报告：%4").arg(title).arg(failureCount).arg(totalCount).arg(reportPath));
             QMessageBox::warning(
                 this,
-                QStringLiteral("提交失败"),
-                QStringLiteral("后端已生成报告，但有 %1/%2 个包提交失败。\n%3\n报告：%4")
+                title,
+                QStringLiteral("%1/%2 个包处理失败。\n%3\n报告：%4")
                     .arg(failureCount)
                     .arg(totalCount)
                     .arg(failureMessage)
@@ -763,8 +850,16 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         }
         m_sidebar->setTaskState(QStringLiteral("submit"), QStringLiteral("done"), QStringLiteral("当前应用"));
         m_workflowBar->setStepStates(StepState::Done, StepState::Done, StepState::Done, StepState::Done);
-        m_workflowBar->setStatusText(QStringLiteral("提交完成，报告：%1").arg(reportPath));
-        QMessageBox::information(this, QStringLiteral("提交完成"), QStringLiteral("已提交当前应用。\n报告：%1").arg(reportPath));
+        const QString title = savedDraft ? QStringLiteral("草稿已保存") : QStringLiteral("提交完成");
+        m_workflowBar->setStatusText(QStringLiteral("%1，报告：%2").arg(title, reportPath));
+        const QString detailId = data.value(QStringLiteral("draft_detail_id")).toString();
+        if (!detailId.isEmpty()) {
+            if (detailId == m_currentGroup.value(QStringLiteral("draft_detail_id")).toString()) {
+                clearCurrentWorkspace(true, title);
+            }
+            listMyApps();
+        }
+        QMessageBox::information(this, title, QStringLiteral("%1。\n报告：%2").arg(title, reportPath));
         return;
     }
 }
@@ -801,7 +896,7 @@ void MainWindow::handleBridgeFailed(const QString &command, const QString &messa
         m_recentLogs.append(traceback);
     }
 
-    if (shouldShowBlockingFailureDialog(command)) {
+    if (shouldShowBlockingFailureDialog(command) || command == QStringLiteral("delete_draft")) {
         QMessageBox::warning(this, QStringLiteral("后端任务失败"), friendlyMessage);
     } else {
         sendMessage(style()->standardIcon(QStyle::SP_MessageBoxWarning), friendlyMessage);
@@ -855,7 +950,14 @@ void MainWindow::applySessionData(const QJsonObject &data)
 void MainWindow::setCurrentGroup(const QJsonObject &group)
 {
     const QString previousKey = m_currentGroup.value(QStringLiteral("key")).toString();
-    m_currentGroup = normalizedGroup(groupWithSelectedOnlineApp(group));
+    QJsonObject nextGroup = normalizedGroup(groupWithSelectedOnlineApp(group));
+    const QString draftId = nextGroup.value(QStringLiteral("draft_detail_id")).toString();
+    if (!draftId.isEmpty() && draftId == m_currentGroup.value(QStringLiteral("draft_detail_id")).toString()
+        && !nextGroup.contains(QStringLiteral("removed_draft_package_ids"))) {
+        nextGroup.insert(QStringLiteral("removed_draft_package_ids"),
+            m_currentGroup.value(QStringLiteral("removed_draft_package_ids")).toArray());
+    }
+    m_currentGroup = withoutDraftPackageRows(nextGroup);
     m_selectedPackagePath = effectiveSelectedPackagePath(m_currentGroup, m_selectedPackagePath);
     if (!m_selectedPackagePath.isEmpty()) {
         m_currentGroup.insert(QStringLiteral("selected_package_path"), m_selectedPackagePath);
@@ -929,7 +1031,8 @@ void MainWindow::renderCurrentGroup()
         m_workspaceTabs->setCurrentWidget(m_metadataPanel);
     }
     m_workspacePages->setCurrentWidget(hasGroup ? static_cast<QWidget *>(m_workspaceTabs) : m_homePage);
-    m_workflowBar->setPublishControlsVisible(hasGroup && m_workspaceTabs->currentWidget() == m_publishPage);
+    m_workflowBar->setPublishControlsVisible(hasGroup && m_workspaceTabs->currentWidget() == m_publishPage,
+        !m_currentGroup.value(QStringLiteral("draft_detail_id")).toString().isEmpty());
     m_publishSummaryLabel->setText(QStringLiteral("%1 · %2 个安装包")
                                       .arg(displayName)
                                       .arg(m_currentGroup.value(QStringLiteral("packages")).toArray().size()));
@@ -981,6 +1084,29 @@ void MainWindow::selectPackage(const QString &packagePath)
     renderCurrentGroup();
     renderSidebar();
     m_workflowBar->setStatusText(QStringLiteral("已选择包：%1。可在「图标与截图」查看素材。").arg(label));
+}
+
+void MainWindow::removeDraftPackage(const QString &packagePath)
+{
+    QJsonObject group = currentGroupFromUi();
+    if (m_bridge->isBusy() || group.value(QStringLiteral("draft_detail_id")).toString().isEmpty()) {
+        return;
+    }
+    const QJsonObject package = packageByPath(group, packagePath);
+    const QString originId = package.value(QStringLiteral("origin_id")).toString();
+    if (package.value(QStringLiteral("path")).toString() != packagePath || originId.isEmpty()) {
+        return;
+    }
+    if (group.value(QStringLiteral("packages")).toArray().size() <= 1) {
+        QMessageBox::information(this, QStringLiteral("草稿安装包"),
+            QStringLiteral("草稿需要至少一个安装包。可从左侧应用菜单删除整份草稿。"));
+        return;
+    }
+    QJsonArray removedIds = group.value(QStringLiteral("removed_draft_package_ids")).toArray();
+    removedIds.append(originId);
+    group.insert(QStringLiteral("removed_draft_package_ids"), removedIds);
+    setCurrentGroup(group);
+    m_workflowBar->setStatusText(QStringLiteral("已移出安装包，保存草稿后生效。"));
 }
 
 void MainWindow::editPackageTargets(const QString &packagePath)
@@ -1606,11 +1732,30 @@ void MainWindow::selectOnlineApp(const QJsonObject &app)
     runBridgeCommand(QStringLiteral("fetch_match_defaults"), payload, 300000);
 }
 
-void MainWindow::submitCurrentGroup()
+void MainWindow::deleteDraft(const QString &detailId, const QString &appName)
+{
+    if (detailId.isEmpty() || m_preferredAccount.isEmpty() || m_bridge->isBusy()) {
+        return;
+    }
+    if (QMessageBox::question(this, QStringLiteral("删除草稿"),
+            QStringLiteral("确定删除「%1」的草稿？").arg(appName),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("preferred_account"), m_preferredAccount);
+    payload.insert(QStringLiteral("detail_id"), detailId);
+    runBridgeCommand(QStringLiteral("delete_draft"), payload, 300000);
+}
+
+void MainWindow::submitCurrentGroup(bool saveDraft)
 {
     const QJsonObject group = normalizedGroup(groupWithSelectedOnlineApp(currentGroupFromUi()));
     if (group.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("未选择应用"), QStringLiteral("请先选择我的应用，或拖入并解析包文件。"));
+        return;
+    }
+    if (saveDraft && group.value(QStringLiteral("draft_detail_id")).toString().isEmpty()) {
         return;
     }
     if (!groupHasPackages(group) && !groupTargetsExistingApp(group)) {
@@ -1646,6 +1791,7 @@ void MainWindow::submitCurrentGroup()
     payload.insert(QStringLiteral("release_key"), QStringLiteral("stable"));
     payload.insert(QStringLiteral("pkg_channel"), QStringLiteral("stable"));
     payload.insert(QStringLiteral("note"), group.value(QStringLiteral("note_zh")).toString());
+    payload.insert(QStringLiteral("save_draft"), saveDraft);
     runBridgeCommand(QStringLiteral("submit"), payload, 1800000);
 }
 
@@ -1690,6 +1836,7 @@ void MainWindow::analyzePackagePaths(const QStringList &paths)
     }
     QJsonObject payload;
     payload.insert(QStringLiteral("package_paths"), packagePaths);
+    payload.insert(QStringLiteral("current_group"), m_currentGroup);
     payload.insert(QStringLiteral("preferred_account"), m_preferredAccount);
     payload.insert(QStringLiteral("preferred_app_id"), AppJson::stringValue(
         m_selectedOnlineApp, QStringLiteral("app_id"), m_selectedOnlineApp.value(QStringLiteral("id")).toString()));

@@ -50,6 +50,7 @@ private:
     void appendLogs(const QJsonArray &logs);
     void selectPackage(const QString &packagePath);
     void editPackageTargets(const QString &packagePath);
+    void removeDraftPackage(const QString &packagePath);
 
     QJsonObject normalizedGroup(QJsonObject group) const;
     QJsonObject currentGroupFromUi() const;
@@ -71,7 +72,8 @@ private:
     void removeScreenshotAt(int index);
     void generatePlaceholderScreenshots();
     void selectOnlineApp(const QJsonObject &app);
-    void submitCurrentGroup();
+    void deleteDraft(const QString &detailId, const QString &appName);
+    void submitCurrentGroup(bool saveDraft = false);
 
     QString ensureManualAssetDir() const;
     QString newScreenshotPath(const QString &suffix) const;

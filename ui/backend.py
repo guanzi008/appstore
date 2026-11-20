@@ -25,6 +25,7 @@ from appstore.platforms import PlatformMappingError, normalize_package_arch, res
 from appstore.session_state import BrowserSessionState, SessionStateStore
 from appstore.submission import submit_grouped_release, validate_release_group
 from appstore.translation import TranslationConfig, desired_languages_for_regions, translate_listing_texts
+from appstore.update_payload import draft_detail_id, extract_detail_data
 from appstore.upload_batch import _write_reports
 from ui.assets import AssetBundle, preprocess_assets
 from ui.package_meta import PackageGroup
@@ -128,6 +129,9 @@ class BatchGroupSubmissionPlan:
     cpu_clip_codes: tuple[str, ...] | None = None
     motherboard_codes: tuple[str, ...] | None = None
     manual_icon_path: Path | None = None
+    save_draft: bool = False
+    expected_draft_id: str = ""
+    removed_draft_package_ids: tuple[str, ...] = ()
 
 
 REGION_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -849,6 +853,10 @@ def submit_applications_batch(
         group_targets = tuple(option for option in selected_targets if option.package_path in package_paths)
         group_output_dir = output_dir / f"{index:02d}-{_safe_output_name(package_group.pkg_name)}-{_safe_output_name(package_group.pkg_version)}"
         try:
+            if (plan.expected_draft_id or plan.save_draft or plan.removed_draft_package_ids) and (
+                resolved_mode != "update" or plan.selected_match is None
+            ):
+                raise RuntimeError("请先打开要编辑的草稿。")
             if resolved_mode == "update":
                 result = _submit_batch_update_plan(
                     login=login,
@@ -951,6 +959,24 @@ def _submit_batch_update_plan(
     package_group = plan.package_group
     match = plan.selected_match or _resolve_batch_existing_match(login.client, package_group=package_group)
     existing_app_detail = fetch_existing_app_detail(login.client, match, log=log)
+    draft_id = draft_detail_id(existing_app_detail)
+    expected_draft_id = plan.expected_draft_id
+    if not expected_draft_id and (plan.save_draft or plan.removed_draft_package_ids):
+        expected_draft_id = match.detail_id
+    if expected_draft_id and (draft_id != expected_draft_id or match.detail_id != expected_draft_id):
+        raise RuntimeError("草稿状态已变化，请重新打开应用后重试。")
+    if draft_id and match.pkg_name and match.pkg_name != package_group.pkg_name:
+        raise RuntimeError("安装包名与当前草稿不一致。")
+    if plan.removed_draft_package_ids:
+        detail_data = extract_detail_data(existing_app_detail)
+        removed_ids = set(plan.removed_draft_package_ids)
+        existing_app_detail = dict(
+            detail_data,
+            app_origin_pkgs=[
+                row for row in (detail_data.get("app_origin_pkgs") or ())
+                if isinstance(row, dict) and str(row.get("id") or "").strip() not in removed_ids
+            ],
+        )
     note_zh = plan.note_zh.strip() or note.strip()
     developer_name = plan.developer_name.strip()
     if plan.metadata_edited:
@@ -1034,6 +1060,7 @@ def _submit_batch_update_plan(
         cpu_clip_codes=plan.cpu_clip_codes,
         motherboard_codes=plan.motherboard_codes,
         log=log,
+        save_draft=plan.save_draft,
     )
 
 
@@ -1210,6 +1237,7 @@ def _submit_grouped_release(
     cpu_clip_codes: tuple[str, ...] | None,
     motherboard_codes: tuple[str, ...] | None,
     log: Callable[[str], None] | None,
+    save_draft: bool = False,
 ) -> SubmissionResult:
     selected = tuple(option for option in selected_targets if option.selected)
     if not selected:
@@ -1338,7 +1366,7 @@ def _submit_grouped_release(
     elif existing_app_detail is None:
         raise RuntimeError("new app submission requires icon and screenshots")
 
-    _log(log, "提交应用信息到商店。")
+    _log(log, "保存现有草稿。" if save_draft else "提交应用信息到商店。")
     response = submit_grouped_release(
         client=login.client,
         validated_release=validated_release,
@@ -1350,6 +1378,7 @@ def _submit_grouped_release(
         localized_lan_texts=localized_lan_texts,
         desired_lans=desired_lans,
         developer_name=developer_name.strip(),
+        save_draft=save_draft,
     )
 
     rows = _make_result_rows(

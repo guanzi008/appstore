@@ -31,6 +31,7 @@ public:
 signals:
     void packageSelected(const QString &packagePath);
     void packageTargetEditRequested(const QString &packagePath);
+    void draftPackageRemoveRequested(const QString &packagePath);
 
 private:
     void buildUi();
