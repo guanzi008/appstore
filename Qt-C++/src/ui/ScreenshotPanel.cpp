@@ -16,6 +16,7 @@
 #include <QSize>
 #include <QSizePolicy>
 #include <QStyle>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QWidget>
 

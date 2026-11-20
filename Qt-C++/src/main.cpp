@@ -56,7 +56,11 @@ void configureApplicationFonts(Dtk::Widget::DApplication &app)
     QFont font = app.font();
     const QStringList families = preferredFontFamilies();
     if (!families.isEmpty()) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 13, 0)
         font.setFamilies(families);
+#else
+        font.setFamily(families.first());
+#endif
     }
     font.setPointSize(10);
     app.setFont(font);

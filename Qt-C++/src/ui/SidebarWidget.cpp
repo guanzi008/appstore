@@ -10,6 +10,7 @@
 #include <QStyle>
 #include <QFontMetrics>
 #include <QtGlobal>
+#include <QVariant>
 #include <QWidget>
 
 namespace {

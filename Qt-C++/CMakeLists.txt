@@ -1,11 +1,11 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.13...3.21)
 
 project(UnionTechAppDeliveryAssistantQtCpp LANGUAGES CXX)
 
 set(APPSTORE_APPID "com.uniontech.utpublisher" CACHE STRING "deepin/UOS store appid")
 set(APPSTORE_APP_ROOT "opt/apps/${APPSTORE_APPID}" CACHE STRING "deepin/UOS store install root")
 set(APPSTORE_RUNTIME_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "Runtime root used by the Python backend")
-set(APPSTORE_INFO_VERSION "0.1.2" CACHE STRING "Version written to /opt/apps/<appid>/info")
+set(APPSTORE_INFO_VERSION "0.1.3" CACHE STRING "Version written to /opt/apps/<appid>/info")
 set(APPSTORE_INFO_ARCH "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Architecture written to /opt/apps/<appid>/info")
 set(APPSTORE_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(APPSTORE_RUNTIME_SHARE_DIR "${APPSTORE_APP_ROOT}/files/share/${APPSTORE_APPID}")
@@ -28,11 +28,15 @@ set_property(CACHE APPSTORE_QT_MAJOR PROPERTY STRINGS AUTO 6 5)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC OFF)
 set(CMAKE_AUTORCC OFF)
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Embed)
+if(CMAKE_VERSION VERSION_LESS 3.18)
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development)
+else()
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development.Embed)
+endif()
 find_package(PkgConfig REQUIRED)
 
 if(APPSTORE_QT_MAJOR STREQUAL "AUTO")
@@ -126,7 +130,7 @@ file(GLOB APPSTORE_PYTHON_WHEELHOUSE_FILES CONFIGURE_DEPENDS
 )
 add_custom_command(
     OUTPUT "${APPSTORE_PYTHON_BYTECODE_DIR}/.stamp"
-    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${APPSTORE_PYTHON_BYTECODE_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory "${APPSTORE_PYTHON_BYTECODE_DIR}"
     COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/compile_python_bytecode.py"
         "${APPSTORE_PROJECT_ROOT}"
@@ -173,7 +177,6 @@ if(APPSTORE_EMBED_PYTHON_RUNTIME)
 
     add_custom_command(
         OUTPUT "${APPSTORE_PYTHON_RUNTIME_DIR}/.stamp"
-        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${APPSTORE_PYTHON_RUNTIME_DIR}"
         COMMAND "${Python3_EXECUTABLE}" ${APPSTORE_PYTHON_RUNTIME_ARGS}
         COMMAND "${CMAKE_COMMAND}" -E touch "${APPSTORE_PYTHON_RUNTIME_DIR}/.stamp"
         DEPENDS
