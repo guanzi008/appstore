@@ -285,10 +285,11 @@ def _normalize_paged_rows_payload(payload: dict | list, action: str) -> dict:
         return {"total": int(total or len(rows)), "rows": rows}
     datas = payload.get("datas")
     if isinstance(datas, dict):
-        rows = datas.get("rows") or datas.get("list") or datas.get("records")
         total = datas.get("total", total)
-        if isinstance(rows, list):
-            return {"total": int(total or len(rows)), "rows": rows}
+        for key in ("rows", "list", "records"):
+            rows = datas.get(key)
+            if isinstance(rows, list):
+                return {"total": int(total or len(rows)), "rows": rows}
     raise AppStoreProtocolError(f"{action} returned unexpected payload: {payload}")
 
 
@@ -383,6 +384,7 @@ def build_submit_payload(
                 ),
                 localized_texts=localized_lan_texts,
                 desired_lans=desired_lans,
+                origin_pkgs=origin_pkgs,
             ),
             "app_basic_info": build_reused_basic_info(
                 existing_app_detail,
@@ -655,7 +657,7 @@ class AppStoreClient:
             raise ValueError("app_id is required")
         payload = self._ensure_ok(
             self.session.get(
-                f"{BASE}/store-dev-app/app/{normalized_app_id}/history",
+                f"{BASE}/store-dev-app/app/{quote(normalized_app_id, safe='')}/history",
                 params={"pageNum": page_num, "pageSize": page_size},
                 timeout=REQUEST_TIMEOUT,
             ),

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import zlib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from appstore.appstore_client import build_requests_session
 from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine, UploadedFileRef
@@ -41,6 +41,8 @@ from ui.cpp_bridge import (
     _sync_existing_detail_assets,
     _targets_for_auto_matched_packages,
     command_analyze,
+    command_get_app_history_notes,
+    command_get_app_workflow,
     command_login_credentials,
     command_save_preferences,
 )
@@ -425,6 +427,72 @@ class UiPreferencesTests(unittest.TestCase):
 
 
 class UiCppBridgeOnlineDetailTests(unittest.TestCase):
+    def test_update_history_pages_keep_separate_submissions_of_the_same_version(self) -> None:
+        client = Mock()
+        client.get_app_history.side_effect = [
+            {"total": 3, "rows": [
+                {"id": "revision-3", "pkg_version": "2.0, 2.0, 2.0", "statusStr": "审核中", "submit_time": "2026-11-23 10:00:00"},
+                {"id": "revision-2", "pkg_version": "2.0", "statusStr": "已上架", "submit_time": "2026-11-22 10:00:00"},
+            ]},
+            {"total": 3, "rows": [{"id": "revision-1", "pkg_version": "1.0", "statusStr": "已上架"}]},
+        ]
+        login = LoginContext(client, "test-account", None, "cached", False)
+        with patch("ui.cpp_bridge.try_restore_cached_login", return_value=login):
+            first = command_get_app_workflow({"app_id": "app-42", "page_num": 1, "page_size": 2})["history"]
+            second = command_get_app_workflow({"app_id": "app-42", "page_num": 2, "page_size": 2})["history"]
+
+        self.assertEqual(client.get_app_history.call_args_list, [
+            call("app-42", page_num=1, page_size=2),
+            call("app-42", page_num=2, page_size=2),
+        ])
+        client.get_app_audit_status.assert_not_called()
+        self.assertEqual((first["page_num"], second["page_num"], second["total"]), (1, 2, 3))
+        self.assertEqual(
+            [(row["detail_id"], row["pkg_version"], row["status_str"]) for row in first["rows"] + second["rows"]],
+            [("revision-3", "2.0", "审核中"), ("revision-2", "2.0", "已上架"), ("revision-1", "1.0", "已上架")],
+        )
+        self.assertEqual(first["rows"][0]["submit_time"], "2026-11-23 10:00:00")
+
+    def test_history_notes_load_the_selected_revision_and_preserve_languages(self) -> None:
+        client = Mock()
+        client.get_app_detail.return_value = {"app_lan_infos": [
+            {
+                "lan": "zh_CN",
+                "update_desc": "旧的通用说明",
+                "pkgUptDesc": [
+                    {"pkgArchVersion": "arm64 2.0,x86 2.0,loongarch64 2.0,loong64 2.0", "uptDesc": "四个架构均改用接口登录。\n"},
+                    {"pkgArchVersion": "x86 1.9", "uptDesc": "保留另一版本的原说明。"},
+                ],
+            },
+            {"lan": "en_US", "update_desc": "Keep earlier imports."},
+            {"lan": "fr_FR", "update_desc": " "},
+        ]}
+        login = LoginContext(client, "test-account", None, "cached", False)
+        with patch("ui.cpp_bridge.try_restore_cached_login", return_value=login):
+            notes = command_get_app_history_notes({"detail_id": "revision-2"})["notes"]
+
+        client.get_app_detail.assert_called_once_with("revision-2")
+        self.assertEqual(notes, [
+            {
+                "language": "中文（简体）", "scope": "package",
+                "packages": ("arm64 2.0", "x86 2.0", "loongarch64 2.0", "loong64 2.0"),
+                "text": "四个架构均改用接口登录。\n",
+            },
+            {"language": "中文（简体）", "scope": "package", "packages": ("x86 1.9",), "text": "保留另一版本的原说明。"},
+            {"language": "中文（简体）", "scope": "general", "text": "旧的通用说明"},
+            {"language": "英文", "scope": "general", "text": "Keep earlier imports."},
+        ])
+
+    def test_current_note_editor_loads_saved_draft_notes_only(self) -> None:
+        match = StoreAppMatch("app-42", "revision-2", "fixture", "Fixture")
+        defaults = {"note_zh": "原中文说明", "note_en": "Original English notes"}
+        for status in (101, -99):
+            with self.subTest(status=status):
+                detail = {"app_basic_info": {"id": "revision-2", "status": status}}
+                group = _online_group_from_detail(match, detail, defaults, None)
+                self.assertEqual(group["note_zh"], defaults["note_zh"] if status == -99 else "")
+                self.assertEqual(group["note_en"], defaults["note_en"] if status == -99 else "")
+
     def test_import_appends_local_packages_and_keeps_workspace_edits(self) -> None:
         old_path = Path("/tmp/demo_2.0_loongarch64.deb")
         new_path = Path("/tmp/demo_2.0_loong64.deb")
@@ -1429,8 +1497,14 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
         draft_id = "draft-revision"
         app_id = "published-app"
         detail = {
-            "app_basic_info": {"id": draft_id, "app_id": app_id, "status": -99, "category_id": 1},
-            "app_lan_infos": [{"lan": "zh_CN", "name": "Demo"}],
+            "app_basic_info": {"id": draft_id, "app_id": app_id, "status": -99, "category_id": 1, "region": "1,2"},
+            "app_lan_infos": [
+                {
+                    "lan": "zh_CN", "name": "Demo", "update_desc": "旧通用说明",
+                    "pkgUptDesc": [{"originPkgKeys": ["arm-row", "old-loongarch", "other-loong"], "uptDesc": "旧包说明"}],
+                },
+                {"lan": "en_US", "name": "Demo", "update_desc": "Previous general notes.", "pkgUptDesc": []},
+            ],
             "app_origin_pkgs": [
                 {
                     "id": row_id, "pkg_name": "demo", "pkg_version": "1.0", "pkg_arch": arch,
@@ -1455,8 +1529,12 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
                 submission_mode="update",
                 selected_match=StoreAppMatch(app_id, draft_id, "demo", "Demo"),
                 app_name_zh="Demo", website="", short_desc_zh="", full_desc_zh="",
-                category_id="1", region_codes=("1",), asset_dir=None,
+                category_id="1", region_codes=("1", "2"), asset_dir=None,
+                note_zh="本次只更新 loongarch64",
+                auto_translate_en=False, manual_en_edited=True,
+                app_name_en="Demo", short_desc_en="Brief", full_desc_en="Description",
                 save_draft=True, expected_draft_id=draft_id, removed_draft_package_ids=("arm-row",),
+                use_package_update_notes=True,
             )
             with (
                 patch.object(client, "get_app_detail", create=True, return_value=detail) as fetch,
@@ -1485,6 +1563,14 @@ class UiBackendBatchSubmitTests(unittest.TestCase):
             {"old-loongarch": "new-key", "other-loong": "other-loong"},
         )
         self.assertCountEqual(app_info["app_fit_info"]["arch"], [{"code": 5}, {"code": 6}])
+        languages = {row["lan"]: row for row in app_info["app_lan_infos"]}
+        self.assertEqual(languages["zh_CN"]["update_desc"], "旧通用说明")
+        self.assertEqual(languages["zh_CN"]["pkgUptDesc"], [
+            {"originPkgKeyStr": "other-loong", "uptDesc": "旧包说明"},
+            {"originPkgKeyStr": "new-key", "uptDesc": "本次只更新 loongarch64"},
+        ])
+        self.assertEqual(languages["en_US"]["update_desc"], "Previous general notes.")
+        self.assertEqual(languages["en_US"]["pkgUptDesc"], [])
 
     def test_draft_submission_stops_before_upload_if_revision_is_no_longer_a_draft(self) -> None:
         draft_id = "draft-revision"

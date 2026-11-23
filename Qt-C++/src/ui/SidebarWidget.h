@@ -29,12 +29,14 @@ signals:
     void loadMoreMyAppsRequested();
     void groupSelected(const QString &groupKey);
     void onlineAppSelected(const QJsonObject &app);
+    void updateHistoryRequested(const QString &appId, const QString &appName);
     void draftDeleteRequested(const QString &detailId, const QString &appName);
     void settingsRequested();
 
 private:
     void buildUi();
     void renderGroups();
+    void addUpdateHistoryAction(QPushButton *button, const QString &appId, const QString &appName);
     QLabel *taskLabelForKey(const QString &taskKey) const;
     static QString taskTitle(const QString &taskKey);
     static QString taskStateText(const QString &state);

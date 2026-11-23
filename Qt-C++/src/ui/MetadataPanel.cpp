@@ -263,7 +263,7 @@ void MetadataPanel::buildUi()
     m_fullDescEdit->setObjectName(QStringLiteral("LargeText"));
     m_fullDescEdit->setPlaceholderText(QStringLiteral("详情描述"));
     m_noteEdit = new QTextEdit(zhPage);
-    m_noteEdit->setPlaceholderText(QStringLiteral("更新说明"));
+    m_noteEdit->setPlaceholderText(QStringLiteral("概述本次版本的新增、修复和调整"));
     configureLineEdit(m_appNameEdit);
     configureLineEdit(m_shortDescEdit);
     configureTextEdit(m_fullDescEdit, kLanguageDescriptionHeight);
@@ -274,7 +274,7 @@ void MetadataPanel::buildUi()
     zhGrid->addWidget(m_shortDescEdit, 1, 1);
     zhGrid->addWidget(makeCaption(QStringLiteral("详情"), zhPage), 2, 0);
     zhGrid->addWidget(m_fullDescEdit, 2, 1);
-    zhGrid->addWidget(makeCaption(QStringLiteral("更新"), zhPage), 3, 0);
+    zhGrid->addWidget(makeCaption(QStringLiteral("本次更新"), zhPage), 3, 0);
     zhGrid->addWidget(m_noteEdit, 3, 1);
     m_languageTabs->addTab(zhPage, QStringLiteral("中文文案"));
 
@@ -295,7 +295,7 @@ void MetadataPanel::buildUi()
     m_fullDescEnEdit->setObjectName(QStringLiteral("LargeText"));
     m_fullDescEnEdit->setPlaceholderText(QStringLiteral("English full description"));
     m_noteEnEdit = new QTextEdit(enPage);
-    m_noteEnEdit->setPlaceholderText(QStringLiteral("English release note"));
+    m_noteEnEdit->setPlaceholderText(QStringLiteral("Summarize the changes in this release"));
     configureLineEdit(m_appNameEnEdit);
     configureLineEdit(m_shortDescEnEdit);
     configureTextEdit(m_fullDescEnEdit, kLanguageDescriptionHeight);
@@ -306,7 +306,7 @@ void MetadataPanel::buildUi()
     enGrid->addWidget(m_shortDescEnEdit, 1, 1);
     enGrid->addWidget(makeCaption(QStringLiteral("Detail"), enPage), 2, 0);
     enGrid->addWidget(m_fullDescEnEdit, 2, 1);
-    enGrid->addWidget(makeCaption(QStringLiteral("Note"), enPage), 3, 0);
+    enGrid->addWidget(makeCaption(QStringLiteral("Update"), enPage), 3, 0);
     enGrid->addWidget(m_noteEnEdit, 3, 1);
     m_languageTabs->addTab(enPage, QStringLiteral("English Copy"));
     formGrid->addWidget(m_languageTabs, 2, 0, 1, 4);

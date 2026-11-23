@@ -566,6 +566,16 @@ class ClientSessionTests(unittest.TestCase):
 
 
 class ClientListAppsTests(unittest.TestCase):
+    def test_get_app_history_keeps_the_total_when_a_page_is_empty(self) -> None:
+        session = _FakeSession([_FakeResponse(json_data={"code": 200, "datas": {"rows": [], "total": 12}})])
+        client = AppStoreClient(session=session)
+
+        self.assertEqual(client.get_app_history("app-42", page_num=2, page_size=10), {"rows": [], "total": 12})
+        method, url, kwargs = session.calls[0]
+        self.assertEqual(method, "GET")
+        self.assertTrue(url.endswith("/store-dev-app/app/app-42/history"))
+        self.assertEqual(kwargs["params"], {"pageNum": 2, "pageSize": 10})
+
     def test_list_apps_returns_top_level_json_list_unchanged(self) -> None:
         payload = [{"pkg_name": "alpha"}, {"pkg_name": "beta"}]
         client = AppStoreClient(session=_FakeSession([_FakeResponse(json_data=payload)]))

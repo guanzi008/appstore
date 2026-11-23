@@ -8,6 +8,7 @@
 #include "ui/ScreenshotPanel.h"
 #include "ui/SidebarWidget.h"
 #include "ui/TargetMatrixPanel.h"
+#include "ui/UpdateHistoryDialog.h"
 #include "ui/VersionPicker.h"
 #include "ui/WorkflowBar.h"
 
@@ -465,6 +466,11 @@ void MainWindow::buildUi()
     });
     connect(m_sidebar, &SidebarWidget::loadMoreMyAppsRequested, this, &MainWindow::loadMoreMyApps);
     connect(m_sidebar, &SidebarWidget::onlineAppSelected, this, &MainWindow::selectOnlineApp);
+    connect(m_sidebar, &SidebarWidget::updateHistoryRequested, this,
+        [this](const QString &appId, const QString &appName) {
+            UpdateHistoryDialog dialog(appId, appName, m_preferredAccount, this);
+            dialog.exec();
+        });
     connect(m_sidebar, &SidebarWidget::draftDeleteRequested, this, &MainWindow::deleteDraft);
     connect(m_sidebar, &SidebarWidget::settingsRequested, this, &MainWindow::openPreferences);
     connect(m_sidebar, &SidebarWidget::groupSelected, this, [this](const QString &key) {

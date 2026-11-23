@@ -301,6 +301,7 @@ def build_release_payload(
     desired_lans: tuple[str, ...] | None = None,
     developer_name: str = "",
     save_draft: bool = False,
+    current_package_notes: dict[str, str] | None = None,
 ) -> dict:
     draft_id = draft_detail_id(existing_app_detail)
     if save_draft and not draft_id:
@@ -410,13 +411,34 @@ def build_release_payload(
     if existing_app_detail is not None:
         overrides = existing_app_overrides or {}
         merged_origin_pkgs = merge_origin_pkgs(existing_app_detail, origin_pkgs)
+        release_note = validated_release.release.note
+        package_notes = None
+        if current_package_notes is not None:
+            release_note = ""
+            localized_lan_texts = {
+                lan: {key: value for key, value in texts.items() if key != "update_desc"}
+                for lan, texts in (localized_lan_texts or {}).items()
+            }
+            uploaded_keys = {upload.file_save_key for upload in uploads_by_package.values()}
+            keys = ",".join(dict.fromkeys(
+                pkg["file_save_key"] for pkg in merged_origin_pkgs if pkg.get("file_save_key") in uploaded_keys
+            ))
+            if keys:
+                package_notes = {
+                    lan: {"originPkgKeyStr": keys, "uptDesc": note}
+                    for lan, note in current_package_notes.items() if note.strip()
+                }
+            else:
+                for lan, note in current_package_notes.items():
+                    if note.strip():
+                        localized_lan_texts.setdefault(lan, {})["update_desc"] = note
         fit_system_codes, fit_baseline_ids, fit_unsupported_ids, fit_arch_codes = _fit_values_from_origin_pkgs(
             merged_origin_pkgs
         )
         app_info = {
             "app_lan_infos": build_reused_lan_infos(
                 existing_app_detail,
-                release_note=validated_release.release.note,
+                release_note=release_note,
                 screenshot_uploads=(
                     tuple(app_uploads["screenshots"])
                     if app_uploads is not None and "screenshots" in app_uploads
@@ -449,6 +471,8 @@ def build_release_payload(
                     if "developer_name" in overrides and overrides["developer_name"] is not None
                     else developer_name
                 ),
+                origin_pkgs=merged_origin_pkgs,
+                new_package_notes=package_notes,
             ),
             "app_basic_info": build_reused_basic_info(
                 existing_app_detail,
@@ -544,6 +568,7 @@ def submit_grouped_release(
     desired_lans: tuple[str, ...] | None = None,
     developer_name: str = "",
     save_draft: bool = False,
+    current_package_notes: dict[str, str] | None = None,
 ) -> dict:
     developer_name = developer_name.strip()
     if existing_app_detail is None and not developer_name:
@@ -564,6 +589,7 @@ def submit_grouped_release(
         desired_lans=desired_lans,
         developer_name=developer_name,
         save_draft=save_draft,
+        current_package_notes=current_package_notes,
     )
     draft_id = draft_detail_id(existing_app_detail)
     if draft_id:

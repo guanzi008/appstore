@@ -5,7 +5,7 @@ project(UnionTechAppDeliveryAssistantQtCpp LANGUAGES CXX)
 set(APPSTORE_APPID "com.uniontech.utpublisher" CACHE STRING "deepin/UOS store appid")
 set(APPSTORE_APP_ROOT "opt/apps/${APPSTORE_APPID}" CACHE STRING "deepin/UOS store install root")
 set(APPSTORE_RUNTIME_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH "Runtime root used by the Python backend")
-set(APPSTORE_INFO_VERSION "0.1.6" CACHE STRING "Version written to /opt/apps/<appid>/info")
+set(APPSTORE_INFO_VERSION "0.1.7" CACHE STRING "Version written to /opt/apps/<appid>/info")
 set(APPSTORE_INFO_ARCH "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Architecture written to /opt/apps/<appid>/info")
 set(APPSTORE_PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(APPSTORE_RUNTIME_SHARE_DIR "${APPSTORE_APP_ROOT}/files/share/${APPSTORE_APPID}")
@@ -84,6 +84,7 @@ add_executable(utpublisher-qt-cpp
     src/ui/ScreenshotPanel.cpp
     src/ui/SidebarWidget.cpp
     src/ui/TargetMatrixPanel.cpp
+    src/ui/UpdateHistoryDialog.cpp
     src/ui/VersionPicker.cpp
     src/ui/WorkflowBar.cpp
 )

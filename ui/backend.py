@@ -132,6 +132,7 @@ class BatchGroupSubmissionPlan:
     save_draft: bool = False
     expected_draft_id: str = ""
     removed_draft_package_ids: tuple[str, ...] = ()
+    use_package_update_notes: bool = False
 
 
 REGION_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -1024,6 +1025,28 @@ def _submit_batch_update_plan(
             validation_report=None,
             warnings=(),
         )
+    localized_lan_texts = _build_localized_lan_texts(
+        app_name_zh=app_name_zh,
+        short_desc_zh=short_desc_zh,
+        full_desc_zh=full_desc_zh,
+        note=note_zh,
+        region_codes=region_codes,
+        existing_app_detail=existing_app_detail,
+        manual_en_texts=_manual_en_texts_from_plan(plan),
+        allow_auto_translate=plan.auto_translate_en,
+        log=log,
+    )
+    current_package_notes = None
+    if plan.use_package_update_notes:
+        note_en = plan.note_en.strip()
+        if plan.auto_translate_en and note_zh:
+            note_en = localized_lan_texts.get("en_US", {}).get("update_desc", "")
+        current_package_notes = {"zh_CN": note_zh, "en_US": note_en}
+        if draft_id:
+            current_package_notes = {
+                lan: text for lan, text in current_package_notes.items()
+                if text != str((_existing_lan_info(existing_app_detail, lan) or {}).get("update_desc") or "").strip()
+            }
     return _submit_grouped_release(
         login=login,
         package_group=package_group,
@@ -1045,22 +1068,13 @@ def _submit_batch_update_plan(
         existing_app_detail=existing_app_detail,
         existing_app_overrides=existing_overrides,
         desired_lans=desired_languages_for_regions(region_codes),
-        localized_lan_texts=_build_localized_lan_texts(
-            app_name_zh=app_name_zh,
-            short_desc_zh=short_desc_zh,
-            full_desc_zh=full_desc_zh,
-            note=note_zh,
-            region_codes=region_codes,
-            existing_app_detail=existing_app_detail,
-            manual_en_texts=_manual_en_texts_from_plan(plan),
-            allow_auto_translate=plan.auto_translate_en,
-            log=log,
-        ),
+        localized_lan_texts=localized_lan_texts,
         developer_name=developer_name,
         cpu_clip_codes=plan.cpu_clip_codes,
         motherboard_codes=plan.motherboard_codes,
         log=log,
         save_draft=plan.save_draft,
+        current_package_notes=current_package_notes,
     )
 
 
@@ -1238,6 +1252,7 @@ def _submit_grouped_release(
     motherboard_codes: tuple[str, ...] | None,
     log: Callable[[str], None] | None,
     save_draft: bool = False,
+    current_package_notes: dict[str, str] | None = None,
 ) -> SubmissionResult:
     selected = tuple(option for option in selected_targets if option.selected)
     if not selected:
@@ -1379,6 +1394,7 @@ def _submit_grouped_release(
         desired_lans=desired_lans,
         developer_name=developer_name.strip(),
         save_draft=save_draft,
+        current_package_notes=current_package_notes,
     )
 
     rows = _make_result_rows(

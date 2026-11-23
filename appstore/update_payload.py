@@ -201,6 +201,26 @@ def draft_detail_id(existing_app_detail: dict | None) -> str:
     return ""
 
 
+def _package_update_notes(
+    notes: object, package_keys: set[str] | None, new_note: dict | None,
+) -> list[dict]:
+    updated_keys = set(_csv_tokens(new_note.get("originPkgKeyStr"))) if new_note else set()
+    retained = []
+    for note in notes if isinstance(notes, list) else ():
+        if not isinstance(note, dict):
+            continue
+        keys = _csv_tokens(note.get("originPkgKeys")) or _csv_tokens(note.get("originPkgKeyStr"))
+        keys = tuple(dict.fromkeys(
+            key for key in keys if key not in updated_keys and (package_keys is None or key in package_keys)
+        ))
+        text = note.get("uptDesc")
+        if keys and isinstance(text, str) and text.strip():
+            retained.append({"originPkgKeyStr": ",".join(keys), "uptDesc": text})
+    if new_note:
+        retained.append(new_note)
+    return retained
+
+
 def build_reused_lan_infos(
     existing_app_detail: dict | None,
     *,
@@ -214,6 +234,8 @@ def build_reused_lan_infos(
     localized_texts: dict[str, dict[str, str]] | None = None,
     desired_lans: tuple[str, ...] | None = None,
     developer_name: str | None = None,
+    origin_pkgs: list[dict] | None = None,
+    new_package_notes: dict[str, dict] | None = None,
 ) -> list[dict]:
     detail_data = extract_detail_data(existing_app_detail)
     lan_infos = detail_data.get("app_lan_infos")
@@ -253,6 +275,7 @@ def build_reused_lan_infos(
     if not ordered_lans:
         ordered_lans = ["zh_CN"]
 
+    package_keys = None if origin_pkgs is None else {_text(pkg.get("file_save_key")) for pkg in origin_pkgs}
     normalized_infos: list[dict] = []
     for lan in ordered_lans:
         info = info_by_lan.get(lan, {})
@@ -297,6 +320,9 @@ def build_reused_lan_infos(
                 "appScreenShotList": screenshots,
             }
         )
+        new_note = (new_package_notes or {}).get(lan)
+        if "pkgUptDesc" in info or new_note:
+            normalized_infos[-1]["pkgUptDesc"] = _package_update_notes(info.get("pkgUptDesc"), package_keys, new_note)
     return normalized_infos
 
 

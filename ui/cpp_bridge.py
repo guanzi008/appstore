@@ -48,7 +48,8 @@ from ui.backend import (
 from appstore.appstore_client import package_family_from_app_detail, package_format_from_app_detail
 from appstore.capabilities import system_lines_for_arch
 from appstore.platforms import ARCHITECTURES, normalize_package_arch
-from appstore.update_payload import draft_detail_id, origin_pkg_arch
+from appstore.translation import LANGUAGE_LABELS
+from appstore.update_payload import draft_detail_id, extract_detail_data, origin_pkg_arch
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences, normalize_default_target_ranges
 from appstore.session_state import SessionStateStore
@@ -667,6 +668,7 @@ def _online_targets_from_detail(
 
 def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, defaults: dict, capability_cache) -> dict:
     data = _detail_data(existing_app_detail)
+    draft_id = draft_detail_id(existing_app_detail)
     fit_info = data.get("app_fit_info") or {}
     origin_pkgs = data.get("app_origin_pkgs") if isinstance(data.get("app_origin_pkgs"), list) else []
     package_family = package_family_from_app_detail(existing_app_detail) or "deb"
@@ -708,7 +710,7 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
     return {
         "key": f"online|{match.app_id or match.detail_id or pkg_name}",
         "online_only": True,
-        "draft_detail_id": draft_detail_id(existing_app_detail),
+        "draft_detail_id": draft_id,
         "pkg_name": pkg_name,
         "pkg_version": ",".join(version_values),
         "package_family": package_family,
@@ -733,12 +735,15 @@ def _online_group_from_detail(match: StoreAppMatch, existing_app_detail: dict, d
         "full_desc_zh": str(defaults.get("full_desc_zh", "") or "").strip(),
         "category_id": str(defaults.get("category_id", "") or "1"),
         "region_codes": list(defaults.get("region_codes", ("1",)) or ("1",)),
-        "note_zh": str(defaults.get("note_zh", "") or "").strip(),
+        "note_zh": str(defaults.get("note_zh", "") or "").strip() if draft_id else "",
         "app_name_en": str(defaults.get("app_name_en", "") or "").strip(),
         "short_desc_en": str(defaults.get("short_desc_en", "") or "").strip(),
         "full_desc_en": str(defaults.get("full_desc_en", "") or "").strip(),
-        "note_en": str(defaults.get("note_en", "") or "").strip(),
-        "manual_en_edited": bool(defaults.get("app_name_en") or defaults.get("short_desc_en") or defaults.get("full_desc_en") or defaults.get("note_en")),
+        "note_en": str(defaults.get("note_en", "") or "").strip() if draft_id else "",
+        "manual_en_edited": bool(
+            defaults.get("app_name_en") or defaults.get("short_desc_en") or defaults.get("full_desc_en")
+            or (draft_id and defaults.get("note_en"))
+        ),
         "metadata_edited": True,
         "replace_assets": False,
         "adapt_arch_codes": list(arch_codes),
@@ -1181,6 +1186,13 @@ def _store_app_row_to_json(row: dict) -> dict:
     }
 
 
+def _history_row_to_json(row: dict) -> dict:
+    record = _store_app_row_to_json(row)
+    versions = _dedupe([version.strip() for version in record["pkg_version"].split(",") if version.strip()])
+    record["pkg_version"] = ", ".join(versions)
+    return record
+
+
 def _audit_status_to_json(payload: dict) -> dict:
     rows = payload.get("datas", [])
     if not isinstance(rows, list):
@@ -1504,6 +1516,7 @@ def _group_payload_to_plan(
         metadata_edited=bool(group_payload.get("metadata_edited", False)),
         manual_en_edited=bool(group_payload.get("manual_en_edited", False)),
         save_draft=save_draft,
+        use_package_update_notes=True,
         expected_draft_id=str(group_payload.get("draft_detail_id") or "").strip(),
         removed_draft_package_ids=_dedupe(_code_items(group_payload.get("removed_draft_package_ids"))),
         cpu_clip_codes=_group_payload_selected_codes(
@@ -1793,11 +1806,15 @@ def command_get_app_workflow(payload: dict) -> dict:
         raise RuntimeError("未找到可用登录态，请先登录。")
     if not detail_id and not app_id:
         raise ValueError("detail_id or app_id is required")
+    page_num = int(payload.get("page_num", 1))
+    page_size = int(payload.get("page_size", 20))
+    if page_num < 1 or page_size < 1:
+        raise ValueError("页码和每页记录数必须大于零。")
     audit = _audit_status_to_json(login_context.client.get_app_audit_status(detail_id)) if detail_id else {
         "submit_time": "",
         "items": [],
     }
-    history = login_context.client.get_app_history(app_id, page_num=1, page_size=20) if app_id else {
+    history = login_context.client.get_app_history(app_id, page_num=page_num, page_size=page_size) if app_id else {
         "total": 0,
         "rows": [],
     }
@@ -1805,10 +1822,42 @@ def command_get_app_workflow(payload: dict) -> dict:
         "login": _login_to_json(login_context),
         "audit": audit,
         "history": {
+            "page_num": page_num,
+            "page_size": page_size,
             "total": int(history.get("total", 0) or 0),
-            "rows": [_store_app_row_to_json(row) for row in history.get("rows", [])],
+            "rows": [_history_row_to_json(row) for row in history.get("rows", []) if isinstance(row, dict)],
         },
     }
+
+
+def command_get_app_history_notes(payload: dict) -> dict:
+    detail_id = str(payload.get("detail_id", "") or "").strip()
+    if not detail_id:
+        raise ValueError("请选择一条更新记录。")
+    login_context = try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
+    if login_context is None:
+        raise RuntimeError("未找到可用登录态，请先登录。")
+    detail = extract_detail_data(login_context.client.get_app_detail(detail_id))
+    package_notes = []
+    general_notes = []
+    for entry in detail.get("app_lan_infos") or ():
+        if not isinstance(entry, dict):
+            continue
+        lan = str(entry.get("lan") or "").strip()
+        language = LANGUAGE_LABELS.get(lan, lan)
+        for note in entry.get("pkgUptDesc") or ():
+            if not isinstance(note, dict):
+                continue
+            text = note.get("uptDesc")
+            if isinstance(text, str) and text.strip():
+                packages = _dedupe([
+                    item.strip() for item in str(note.get("pkgArchVersion") or "").split(",") if item.strip()
+                ])
+                package_notes.append({"language": language, "scope": "package", "packages": packages, "text": text})
+        text = entry.get("update_desc")
+        if isinstance(text, str) and text.strip():
+            general_notes.append({"language": language, "scope": "general", "text": text})
+    return {"notes": package_notes + general_notes}
 
 
 def command_load_preferences(payload: dict) -> dict:
@@ -2099,6 +2148,7 @@ COMMANDS = {
     "bootstrap": command_bootstrap,
     "list_my_apps": command_list_my_apps,
     "get_app_workflow": command_get_app_workflow,
+    "get_app_history_notes": command_get_app_history_notes,
     "load_preferences": command_load_preferences,
     "save_preferences": command_save_preferences,
     "login_credentials": command_login_credentials,

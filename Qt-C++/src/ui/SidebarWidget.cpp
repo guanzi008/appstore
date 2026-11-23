@@ -19,15 +19,25 @@
 
 namespace {
 
-void enableAppNameCopy(QPushButton *button, const QString &name)
+void enableAppCopyActions(QPushButton *button, const QString &name, const QString &pkgName, const QString &appId = {})
 {
-    auto *copyName = new QAction(QStringLiteral("复制应用名"), button);
+    const auto addCopyAction = [button](const QString &label, const QString &value) {
+        auto *action = new QAction(label, button);
+        QObject::connect(action, &QAction::triggered, button, [value]() {
+            QApplication::clipboard()->setText(value);
+        });
+        button->addAction(action);
+        return action;
+    };
+    auto *copyName = addCopyAction(QStringLiteral("复制应用名"), name);
     copyName->setShortcut(QKeySequence::Copy);
     copyName->setShortcutContext(Qt::WidgetShortcut);
-    QObject::connect(copyName, &QAction::triggered, button, [name]() {
-        QApplication::clipboard()->setText(name);
-    });
-    button->addAction(copyName);
+    if (!pkgName.isEmpty()) {
+        addCopyAction(QStringLiteral("复制包名"), pkgName);
+    }
+    if (!appId.isEmpty()) {
+        addCopyAction(QStringLiteral("复制商店 ID"), appId);
+    }
     button->setContextMenuPolicy(Qt::ActionsContextMenu);
 }
 
@@ -332,7 +342,7 @@ void SidebarWidget::renderGroups()
             button->setChecked(true);
             button->setCursor(Qt::PointingHandCursor);
             button->setMinimumHeight(36);
-            enableAppNameCopy(button, title);
+            enableAppCopyActions(button, title, AppJson::stringValue(currentGroup, QStringLiteral("pkg_name")));
             connect(button, &QPushButton::clicked, this, [this, key]() {
                 emit groupSelected(key);
             });
@@ -356,6 +366,7 @@ void SidebarWidget::renderGroups()
         for (int index = 0; index < visibleCount; ++index) {
             const QJsonObject app = m_onlineApps.at(index).toObject();
             const QString appId = appIdentity(app);
+            const QString storeId = AppJson::stringValue(app, QStringLiteral("app_id"));
             const QString pkgName = app.value(QStringLiteral("pkg_name")).toString().trimmed();
             const QString subtitle = onlineAppSubtitle(app);
             const QString title = displayAppTitle(app);
@@ -368,8 +379,9 @@ void SidebarWidget::renderGroups()
             button->setCursor(Qt::PointingHandCursor);
             button->setMinimumHeight(30);
             button->setToolTip(QStringLiteral("%1\n%2\n状态：%3\napp_id: %4")
-                                   .arg(title, pkgName, subtitle, app.value(QStringLiteral("app_id")).toString()));
-            enableAppNameCopy(button, title);
+                                   .arg(title, pkgName, subtitle, storeId));
+            enableAppCopyActions(button, title, pkgName, storeId);
+            addUpdateHistoryAction(button, storeId, title);
             const QString detailId = AppJson::stringValue(app, QStringLiteral("detail_id"), app.value(QStringLiteral("id")).toString());
             if (app.value(QStringLiteral("status")).toString() == QStringLiteral("-99") && !detailId.isEmpty()) {
                 auto *deleteDraft = new QAction(QStringLiteral("删除草稿"), button);
@@ -393,7 +405,9 @@ void SidebarWidget::renderGroups()
             button->setCheckable(true);
             button->setChecked(true);
             button->setCursor(Qt::PointingHandCursor);
-            enableAppNameCopy(button, title);
+            enableAppCopyActions(button, title, AppJson::stringValue(currentGroup, QStringLiteral("pkg_name")),
+                                 groupSelectedAppId(currentGroup));
+            addUpdateHistoryAction(button, activeOnlineAppId, title);
             connect(button, &QPushButton::clicked, this, [this, key = currentGroup.value(QStringLiteral("key")).toString()]() {
                 emit groupSelected(key);
             });
@@ -411,6 +425,18 @@ void SidebarWidget::renderGroups()
             m_groupLayout->addWidget(moreButton);
         }
     }
+}
+
+void SidebarWidget::addUpdateHistoryAction(QPushButton *button, const QString &appId, const QString &appName)
+{
+    if (appId.isEmpty()) {
+        return;
+    }
+    auto *action = new QAction(QStringLiteral("更新记录"), button);
+    connect(action, &QAction::triggered, this, [this, appId, appName]() {
+        emit updateHistoryRequested(appId, appName);
+    });
+    button->addAction(action);
 }
 
 QLabel *SidebarWidget::taskLabelForKey(const QString &taskKey) const

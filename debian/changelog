@@ -1,3 +1,11 @@
+com.uniontech.utpublisher (0.1.7) unstable; urgency=medium
+
+  * Show paginated update history with the original package-specific release notes.
+  * Preserve existing package notes and associate new notes with uploaded packages.
+  * Add menu actions for copying package names and store IDs.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Mon, 23 Nov 2026 23:02:05 +0800
+
 com.uniontech.utpublisher (0.1.6) unstable; urgency=medium
 
   * Append compatible package imports and preserve workspace edits.
