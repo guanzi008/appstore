@@ -30,6 +30,7 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QImageReader>
+#include <QIntValidator>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
@@ -42,7 +43,6 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
-#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -1719,19 +1719,27 @@ void MainWindow::openMcpPreferences()
 
     struct ListenerControls {
         QCheckBox *enabled;
-        QSpinBox *port;
+        QLineEdit *port;
         QString token;
+
+        int portNumber() const
+        {
+            return port->text().toInt();
+        }
     };
-    const auto addListener = [&](const McpListener &listener) {
-        auto *row = new QHBoxLayout();
+    auto *listenerRows = new QGridLayout();
+    listenerRows->setColumnStretch(2, 1);
+    const auto addListener = [&](const McpListener &listener, int row) {
         auto *listen = new QCheckBox(listener.label, clientSetup);
         listen->setChecked(m_preferences.value(listener.preference(QStringLiteral("enabled"))).toBool());
         listen->setEnabled(enabled->isChecked());
-        auto *port = new QSpinBox(clientSetup);
-        port->setRange(1, 65535);
+        const int savedPort = m_preferences.value(listener.preference(QStringLiteral("port"))).toInt(listener.defaultPort);
+        auto *port = new QLineEdit(QString::number(savedPort), clientSetup);
+        port->setValidator(new QIntValidator(1, 65535, port));
+        port->setMaxLength(5);
+        port->setFixedWidth(90);
         port->setAccessibleName(QStringLiteral("%1 本机端口").arg(listener.label));
-        port->setValue(m_preferences.value(listener.preference(QStringLiteral("port"))).toInt(listener.defaultPort));
-        auto *address = new QLabel(listener.url(port->value()), clientSetup);
+        auto *address = new QLabel(listener.url(savedPort), clientSetup);
         address->setTextInteractionFlags(Qt::TextSelectableByMouse);
         const auto refreshPort = [port, enabled, listen]() {
             port->setEnabled(enabled->isChecked() && listen->isChecked());
@@ -1744,20 +1752,21 @@ void MainWindow::openMcpPreferences()
                 transport->setCurrentIndex(transport->findData(listener.transport));
             }
         });
-        connect(port, qOverload<int>(&QSpinBox::valueChanged), &dialog, [address, listener, copyConfig](int value) {
-            address->setText(listener.url(value));
+        connect(port, &QLineEdit::textChanged, &dialog, [port, address, listener, copyConfig](const QString &value) {
+            const int number = value.toInt();
+            address->setText(port->hasAcceptableInput() && number > 0 ? listener.url(number) : QString());
             copyConfig->setText(QStringLiteral("复制客户端配置"));
         });
         refreshPort();
-        row->addWidget(listen);
-        row->addWidget(port);
-        row->addWidget(address, 1);
-        clientLayout->addLayout(row);
+        listenerRows->addWidget(listen, row, 0);
+        listenerRows->addWidget(port, row, 1);
+        listenerRows->addWidget(address, row, 2);
         const QString saved = m_preferences.value(listener.preference(QStringLiteral("token"))).toString();
         return ListenerControls{listen, port, saved.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : saved};
     };
-    const ListenerControls http = addListener(HttpListener);
-    const ListenerControls sse = addListener(SseListener);
+    const ListenerControls http = addListener(HttpListener, 0);
+    const ListenerControls sse = addListener(SseListener, 1);
+    clientLayout->addLayout(listenerRows);
     if (http.enabled->isChecked()) {
         transport->setCurrentIndex(transport->findData(HttpListener.transport));
     } else if (sse.enabled->isChecked()) {
@@ -1783,16 +1792,21 @@ void MainWindow::openMcpPreferences()
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
-    connect(copyConfig, &QPushButton::clicked, &dialog, [&mcpProcess, &processEnv, copyConfig, transport, http, sse]() {
+    connect(copyConfig, &QPushButton::clicked, &dialog, [&dialog, &mcpProcess, &processEnv, copyConfig, transport, http, sse]() {
         const auto selected = transport->currentData().toString();
         QJsonObject server;
         if (selected != QStringLiteral("stdio")) {
             const bool useSse = selected == SseListener.transport;
             const auto &listener = useSse ? SseListener : HttpListener;
             const auto &controls = useSse ? sse : http;
+            const int port = controls.portNumber();
+            if (port < 1 || port > 65535) {
+                QMessageBox::information(&dialog, QStringLiteral("端口无效"), QStringLiteral("请输入 1 到 65535 的端口。"));
+                return;
+            }
             server = {
                 {QStringLiteral("type"), listener.transport},
-                {QStringLiteral("url"), listener.url(controls.port->value())},
+                {QStringLiteral("url"), listener.url(port)},
                 {QStringLiteral("headers"), QJsonObject{{QStringLiteral("Authorization"), QStringLiteral("Bearer ") + controls.token}}},
             };
         } else {
@@ -1819,7 +1833,13 @@ void MainWindow::openMcpPreferences()
         copyConfig->setText(QStringLiteral("配置已复制"));
     });
     connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, http, sse]() {
-        if (http.enabled->isChecked() && sse.enabled->isChecked() && http.port->value() == sse.port->value()) {
+        const int httpPort = http.portNumber();
+        const int ssePort = sse.portNumber();
+        if (httpPort < 1 || httpPort > 65535 || ssePort < 1 || ssePort > 65535) {
+            QMessageBox::information(&dialog, QStringLiteral("端口无效"), QStringLiteral("请输入 1 到 65535 的端口。"));
+            return;
+        }
+        if (http.enabled->isChecked() && sse.enabled->isChecked() && httpPort == ssePort) {
             QMessageBox::information(&dialog, QStringLiteral("端口重复"), QStringLiteral("HTTP 和 SSE 需要不同端口。"));
             return;
         }
@@ -1836,10 +1856,10 @@ void MainWindow::openMcpPreferences()
         {QStringLiteral("mcp_allow_actions"), allowActions->isChecked()},
         {QStringLiteral("mcp_output_dir"), outputPath->text().trimmed()},
         {QStringLiteral("mcp_http_enabled"), http.enabled->isChecked()},
-        {QStringLiteral("mcp_http_port"), http.port->value()},
+        {QStringLiteral("mcp_http_port"), http.portNumber()},
         {QStringLiteral("mcp_http_token"), http.token},
         {QStringLiteral("mcp_sse_enabled"), sse.enabled->isChecked()},
-        {QStringLiteral("mcp_sse_port"), sse.port->value()},
+        {QStringLiteral("mcp_sse_port"), sse.portNumber()},
         {QStringLiteral("mcp_sse_token"), sse.token},
     };
     runBridgeCommand(QStringLiteral("save_preferences"), QJsonObject{{QStringLiteral("preferences"), preferences}}, 120000);

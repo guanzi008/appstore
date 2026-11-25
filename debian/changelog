@@ -1,3 +1,9 @@
+com.uniontech.utpublisher (0.1.11) unstable; urgency=medium
+
+  * Align MCP listener controls and show the full port numbers on Deepin.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Wed, 25 Nov 2026 17:29:23 +0800
+
 com.uniontech.utpublisher (0.1.10) unstable; urgency=medium
 
   * Add separately configured local Streamable HTTP and SSE MCP listeners.
