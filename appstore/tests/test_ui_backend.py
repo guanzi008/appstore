@@ -286,6 +286,20 @@ class UiBackendCacheTests(unittest.TestCase):
 
 
 class UiPreferencesTests(unittest.TestCase):
+    def test_saving_mcp_and_system_line_settings_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = PreferenceStore(Path(directory) / "preferences.json")
+            ranges = {"linglong:loongarch64": {"2": {"baseline_id": "128"}}}
+            with patch("ui.cpp_bridge.PreferenceStore", return_value=store):
+                command_save_preferences({"preferences": {"mcp_enabled": True, "mcp_output_dir": directory}})
+                command_save_preferences({"preferences": {"default_target_ranges": ranges}})
+                command_save_preferences({"preferences": {"mcp_allow_actions": True}})
+            loaded = store.load()
+            self.assertTrue(loaded.mcp_enabled)
+            self.assertTrue(loaded.mcp_allow_actions)
+            self.assertEqual(loaded.mcp_output_dir, directory)
+            self.assertEqual(loaded.target_ranges("linglong", "loongarch64"), {"2": DefaultTargetRange("128")})
+
     def test_saves_specific_versions_and_preserves_legacy_system_line_defaults(self) -> None:
         ranges = {
             "deb:x86": {"2": {"baseline_id": "121", "unsupported_baseline_ids": ["128"]}},

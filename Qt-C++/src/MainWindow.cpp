@@ -32,6 +32,7 @@
 #include <QImageReader>
 #include <QJsonArray>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLinearGradient>
 #include <QMessageBox>
 #include <QMimeData>
@@ -473,6 +474,7 @@ void MainWindow::buildUi()
         });
     connect(m_sidebar, &SidebarWidget::draftDeleteRequested, this, &MainWindow::deleteDraft);
     connect(m_sidebar, &SidebarWidget::settingsRequested, this, &MainWindow::openPreferences);
+    connect(m_sidebar, &SidebarWidget::mcpSettingsRequested, this, &MainWindow::openMcpPreferences);
     connect(m_sidebar, &SidebarWidget::groupSelected, this, [this](const QString &key) {
         persistCurrentGroupFromUi();
         const QJsonObject group = groupByKey(key);
@@ -699,7 +701,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
         if (!preferences.isEmpty()) {
             m_preferences = preferences;
         }
-        m_workflowBar->setStatusText(QStringLiteral("偏好设置已保存，新解析的包会按默认系统线初始化。"));
+        m_workflowBar->setStatusText(QStringLiteral("偏好设置已保存。"));
         return;
     }
 
@@ -1539,11 +1541,104 @@ void MainWindow::openPreferences()
         ranges.insert(binding.scope, selected);
     }
 
-    QJsonObject nextPreferences = m_preferences;
-    nextPreferences.insert(QStringLiteral("default_target_ranges"), ranges);
     QJsonObject payload;
-    payload.insert(QStringLiteral("preferences"), nextPreferences);
+    payload.insert(QStringLiteral("preferences"), QJsonObject{{QStringLiteral("default_target_ranges"), ranges}});
     runBridgeCommand(QStringLiteral("save_preferences"), payload, 120000);
+}
+
+void MainWindow::openMcpPreferences()
+{
+    if (m_bridge->isBusy()) {
+        QMessageBox::information(this, QStringLiteral("后端忙碌"), QStringLiteral("当前后端任务尚未结束。"));
+        return;
+    }
+
+    QProcess mcpProcess;
+    BridgeClient::configureProcess(&mcpProcess, QStringLiteral(APPSTORE_REPO_ROOT), QStringLiteral("mcp"));
+    const QProcessEnvironment processEnv = mcpProcess.processEnvironment();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("MCP 设置"));
+    dialog.setAttribute(Qt::WA_StyledBackground, true);
+    dialog.setStyleSheet(styleSheet());
+    dialog.setMinimumWidth(520);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *enabled = new QCheckBox(QStringLiteral("启用 MCP 服务"), &dialog);
+    enabled->setChecked(m_preferences.value(QStringLiteral("mcp_enabled")).toBool());
+    layout->addWidget(enabled);
+
+    auto *allowActions = new QCheckBox(QStringLiteral("允许应用投递与安装截图"), &dialog);
+    allowActions->setChecked(m_preferences.value(QStringLiteral("mcp_allow_actions")).toBool());
+    allowActions->setEnabled(enabled->isChecked());
+    connect(enabled, &QCheckBox::toggled, allowActions, &QCheckBox::setEnabled);
+    layout->addWidget(allowActions);
+
+    auto *outputRow = new QHBoxLayout();
+    auto *outputLabel = new QLabel(QStringLiteral("输出目录"), &dialog);
+    auto *outputPath = new QLineEdit(m_preferences.value(QStringLiteral("mcp_output_dir")).toString(), &dialog);
+    const QString defaultOutput = QDir(processEnv.value(QStringLiteral("UTPUBLISHER_OUTPUT_ROOT")))
+                                      .filePath(QStringLiteral("appstore-mcp-output"));
+    outputPath->setPlaceholderText(QStringLiteral("使用应用默认目录"));
+    outputPath->setToolTip(defaultOutput);
+    outputLabel->setBuddy(outputPath);
+    auto *browse = new QPushButton(QStringLiteral("选择目录"), &dialog);
+    connect(browse, &QPushButton::clicked, &dialog, [&dialog, outputPath, defaultOutput]() {
+        const QString start = outputPath->text().trimmed();
+        const QString directory = QFileDialog::getExistingDirectory(&dialog, QStringLiteral("选择 MCP 输出目录"),
+                                                                    start.isEmpty() ? defaultOutput : start);
+        if (!directory.isEmpty()) {
+            outputPath->setText(directory);
+        }
+    });
+    outputRow->addWidget(outputLabel);
+    outputRow->addWidget(outputPath, 1);
+    outputRow->addWidget(browse);
+    layout->addLayout(outputRow);
+
+    auto *hint = new QLabel(QStringLiteral("保存后将配置合并到 MCP 客户端。客户端连接时会启动服务。"), &dialog);
+    hint->setObjectName(QStringLiteral("MutedText"));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    auto *copyConfig = buttons->addButton(QStringLiteral("复制客户端配置"), QDialogButtonBox::ActionRole);
+    connect(copyConfig, &QPushButton::clicked, &dialog, [&mcpProcess, &processEnv, copyConfig]() {
+        QJsonObject environment;
+        for (const QString &key : {QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"),
+                                  QStringLiteral("UTPUBLISHER_CAPABILITY_CACHE_DIR"),
+                                  QStringLiteral("UTPUBLISHER_SESSION_CACHE_DIR"),
+                                  QStringLiteral("UTPUBLISHER_OUTPUT_ROOT"),
+                                  QStringLiteral("PYTHONPATH"), QStringLiteral("PYTHONHOME")}) {
+            if (processEnv.contains(key)) {
+                environment.insert(key, processEnv.value(key));
+            }
+        }
+        const QString program = mcpProcess.program();
+        const QString resolvedProgram = QStandardPaths::findExecutable(program);
+        const QJsonObject server{
+            {QStringLiteral("command"), resolvedProgram.isEmpty() ? program : resolvedProgram},
+            {QStringLiteral("args"), QJsonArray::fromStringList(mcpProcess.arguments())},
+            {QStringLiteral("env"), environment},
+        };
+        const QJsonObject config{{QStringLiteral("mcpServers"), QJsonObject{{QStringLiteral("appstore-uploader"), server}}}};
+        QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Indented)));
+        copyConfig->setText(QStringLiteral("配置已复制"));
+    });
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QJsonObject preferences{
+        {QStringLiteral("mcp_enabled"), enabled->isChecked()},
+        {QStringLiteral("mcp_allow_actions"), allowActions->isChecked()},
+        {QStringLiteral("mcp_output_dir"), outputPath->text().trimmed()},
+    };
+    runBridgeCommand(QStringLiteral("save_preferences"), QJsonObject{{QStringLiteral("preferences"), preferences}}, 120000);
 }
 
 void MainWindow::preprocessAssets()

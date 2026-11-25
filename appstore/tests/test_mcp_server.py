@@ -9,12 +9,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from openpyxl import load_workbook
 
 from appstore.capabilities import write_capability_cache
 from appstore import mcp_server
-from appstore.models import BaselineOption, CapabilityCache, SystemLine
+from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
+from appstore.tests.test_linglong import _write_native_layer, _write_native_uab
+from appstore.upload_batch import _build_direct_packages, _normalize_direct_targets, _select_capture_package_path
+from ui.preferences import PreferenceStore, UIPreferences
 
 
 class MCPServerTests(unittest.TestCase):
@@ -22,15 +26,19 @@ class MCPServerTests(unittest.TestCase):
         self.repo_root = Path(__file__).resolve().parents[2]
         self.package_path = self.repo_root / "appstore" / "examples" / "packages" / "labelnova_1.0.4-1_amd64.deb"
 
-    def _start_server(self) -> subprocess.Popen[bytes]:
+    def _start_server(self, *, preferences_path: Path | None = None) -> subprocess.Popen[bytes]:
         env = os.environ.copy()
         python_path_entries = [str(self.repo_root)]
         existing_python_path = env.get("PYTHONPATH", "").strip()
         if existing_python_path:
             python_path_entries.append(existing_python_path)
         env["PYTHONPATH"] = os.pathsep.join(python_path_entries)
+        argv = [sys.executable, "-m", "appstore.mcp_server"]
+        if preferences_path is not None:
+            env["UTPUBLISHER_PREFERENCES_PATH"] = str(preferences_path)
+            argv = [sys.executable, "-m", "ui.cpp_bridge", "mcp"]
         return subprocess.Popen(
-            [sys.executable, "-m", "appstore.mcp_server"],
+            argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -317,15 +325,147 @@ class MCPServerTests(unittest.TestCase):
         self.assertTrue(launcher.exists())
         self.assertTrue(os.access(launcher, os.X_OK))
 
+    def test_desktop_preferences_control_managed_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            store = PreferenceStore(temp_root / "preferences.json")
+            output_root = temp_root / "reports"
+            cache_dir = temp_root / "capabilities"
+            write_capability_cache(cache_dir, CapabilityCache(
+                generated_at="2026-11-25T00:00:00+08:00",
+                deb_system_lines={"11": SystemLine("11", "communityV23", "deb")},
+                linglong_system_lines={},
+                baseline_options={},
+            ))
+            store.save(UIPreferences(mcp_output_dir=str(output_root)))
+            with patch.dict(os.environ, {"UTPUBLISHER_CAPABILITY_CACHE_DIR": str(cache_dir)}):
+                process = self._start_server(preferences_path=store.path)
+            try:
+                disabled = self._request(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+                self.assertIn("MCP 已关闭", disabled["error"]["message"])
+                store.save(UIPreferences(mcp_enabled=True, mcp_output_dir=str(output_root)))
+                self._initialize(process)
+
+                tools_request = {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}
+                available = {tool["name"] for tool in self._request(process, tools_request)["result"]["tools"]}
+                self.assertIn("get_capabilities", available)
+                self.assertNotIn("upload_packages", available)
+
+                denied = self._request(process, {
+                    "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "upload_packages"},
+                })
+                self.assertIn("允许投递", denied["error"]["message"])
+
+                workbook = self._request(process, {
+                    "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                    "params": {"name": "prepare_new_app_workbook", "arguments": {"packages": [str(self.package_path)]}},
+                })
+                path = Path(workbook["result"]["structuredContent"]["output_path"])
+                self.assertTrue(path.is_relative_to(output_root))
+                self.assertTrue(path.is_file())
+
+                store.save(UIPreferences(mcp_enabled=True, mcp_allow_actions=True))
+                available = {tool["name"] for tool in self._request(process, tools_request)["result"]["tools"]}
+                self.assertIn("upload_packages", available)
+                store.save(UIPreferences())
+                self.assertIn("error", self._request(process, tools_request))
+            finally:
+                self._stop_server(process)
+
+    def test_linglong_loong_architectures_get_distinct_system_lines_and_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            old_package = directory / "demo.layer"
+            new_package = directory / "demo.uab"
+            info = {"kind": "app", "id": "org.example.demo", "version": "1.2.3"}
+            _write_native_layer(old_package, {**info, "arch": ["loongarch64"]})
+            _write_native_uab(new_package, [{"info": {**info, "arch": ["loong64"]}}])
+
+            cache = CapabilityCache(
+                generated_at="2026-11-25T00:00:00+08:00",
+                deb_system_lines={},
+                linglong_system_lines={
+                    "2": SystemLine("2", "professionalV20", "linglong"),
+                    "21": SystemLine("21", "communityV25", "linglong"),
+                },
+                arch_options={
+                    "5": StoreAdaptOption("5", "loongarch64", system_line_codes=("2",)),
+                    "6": StoreAdaptOption("6", "loong64", system_line_codes=("21",)),
+                },
+                baseline_options={
+                    "linglong:2": (BaselineOption("2", "114", "1073"), BaselineOption("2", "128", "1075")),
+                },
+            )
+            cache_path = write_capability_cache(directory / "cache", cache)
+            paths = [old_package, new_package]
+            package_args = {"packages": [str(path) for path in paths]}
+            inspected = mcp_server._tool_inspect_packages(package_args)["structuredContent"]["packages"]
+            self.assertEqual([(item["package_format"], item["architecture"], item["arch_code"]) for item in inspected], [
+                ("layer", "loongarch64", "5"), ("uab", "loong64", "6"),
+            ])
+
+            capabilities = mcp_server._tool_get_capabilities({
+                "package_family": "linglong", "architecture": "loongarch64", "cache_dir": str(cache_path),
+            })["structuredContent"]
+            line, = capabilities["system_lines"]
+            self.assertEqual(line["code"], "2")
+            self.assertEqual([(item["version"], item["selectable"]) for item in line["baselines"]], [("1073", False), ("1075", True)])
+
+            workbook_path = directory / "submission.xlsx"
+            workbook_args = {
+                **package_args, "output_path": str(workbook_path), "capabilities_cache": str(cache_path),
+                "system_line_codes": ["2", "21"],
+            }
+            prepared = mcp_server._tool_prepare_new_app_workbook(workbook_args)["structuredContent"]
+            self.assertEqual(prepared["selected_system_line_codes"], ["2", "21"])
+            workbook = load_workbook(workbook_path, read_only=True)
+            try:
+                headers, old_row, new_row = workbook["packages"].values
+                old_values = dict(zip(headers, old_row))
+                new_values = dict(zip(headers, new_row))
+                self.assertEqual(old_values["sys__linglong__2__baseline"], "128")
+                self.assertIsNone(old_values["sys__linglong__21__enabled"])
+                self.assertIsNone(new_values["sys__linglong__2__enabled"])
+                self.assertEqual(new_values["sys__linglong__21__enabled"], "Y")
+            finally:
+                workbook.close()
+            partial = mcp_server._tool_prepare_new_app_workbook({**workbook_args, "system_line_codes": ["21"]})["structuredContent"]
+            self.assertIn("system_line_codes:loongarch64", partial["missing_fields"])
+
+            _, records, infos = _build_direct_packages(package_paths=paths, release_key="stable", pkg_channel="stable")
+            self.assertEqual(len(infos), 2)
+            by_path = {record.file_path: infos[record.package_key] for record in records}
+            with patch("appstore.upload_batch._detect_host_arch", return_value="loongarch64"):
+                self.assertEqual(_select_capture_package_path(package_paths=paths, package_infos=by_path), old_package)
+            with patch("appstore.upload_batch._detect_host_arch", return_value="loong64"):
+                self.assertEqual(_select_capture_package_path(package_paths=paths, package_infos=by_path), new_package)
+            old_target, = _normalize_direct_targets(
+                package_record=records[0], package_info=by_path[old_package], existing_app_detail={}, capability_cache=cache,
+            )
+            self.assertEqual((old_target.sup_sys_code, old_target.baseline_id), ("2", "128"))
+
+    def test_auto_upload_reports_failures_without_returning_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            response = mcp_server._tool_auto_upload_packages({
+                "packages": [str(self.package_path)], "output_dir": directory,
+                "username": "demo", "password": "test-password", "min_screenshots": 0,
+            })
+            result = response["structuredContent"]
+            self.assertTrue(response["isError"])
+            self.assertEqual(result["status_counts"], {"capture_failed": 1})
+            self.assertEqual(Path(result["report_path"]), Path(directory) / "upload" / "report.json")
+            self.assertNotIn("test-password", json.dumps(response))
+
     def test_start_capture_packages_creates_background_job(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             with patch.object(mcp_server, "DEFAULT_JOB_ROOT", temp_root / "jobs"), patch.object(
                 mcp_server, "DEFAULT_OUTPUT_ROOT", temp_root / "output"
-            ), patch("appstore.mcp_server.subprocess.Popen", return_value=SimpleNamespace(pid=4321)):
+            ), patch("appstore.mcp_server.subprocess.Popen", return_value=Mock(wait=Mock(return_value=0))) as popen:
                 response = mcp_server._tool_start_capture_packages(  # type: ignore[attr-defined]
                     {
                         "packages": [str(self.package_path)],
+                        "sudo_password": "test-sudo-password",
                     }
                 )
 
@@ -335,7 +475,12 @@ class MCPServerTests(unittest.TestCase):
             state_path = Path(payload["job_dir"]) / "state.json"
             self.assertTrue(state_path.exists())
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual(state["pid"], 4321)
+            self.assertEqual(state["status"], "queued")
+            request = state_path.with_name("request.json")
+            self.assertNotIn("test-sudo-password", request.read_text(encoding="utf-8"))
+            self.assertEqual(request.stat().st_mode & 0o777, 0o600)
+            worker_env = popen.call_args.kwargs["env"]
+            self.assertEqual(json.loads(worker_env["APPSTORE_MCP_JOB_SECRETS"])["sudo_password"], "test-sudo-password")
 
     def test_get_job_status_returns_completed_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

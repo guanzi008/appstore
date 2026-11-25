@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,9 @@ class UIPreferences:
     remembered_password: str = ""
     default_target_system_lines: dict[str, tuple[str, ...]] = field(default_factory=dict)
     default_target_ranges: dict[str, dict[str, DefaultTargetRange]] = field(default_factory=dict)
+    mcp_enabled: bool = False
+    mcp_allow_actions: bool = False
+    mcp_output_dir: str = ""
 
     def target_ranges(self, package_family: str, arch: str) -> dict[str, DefaultTargetRange]:
         scope = f"{package_family}:{arch}"
@@ -71,14 +75,21 @@ class PreferenceStore:
             remembered_password=str(payload.get("remembered_password", "") or ""),
             default_target_system_lines=_normalize_system_line_defaults(payload.get("default_target_system_lines")),
             default_target_ranges=normalize_default_target_ranges(payload.get("default_target_ranges")),
+            mcp_enabled=_normalize_bool(payload.get("mcp_enabled")),
+            mcp_allow_actions=_normalize_bool(payload.get("mcp_allow_actions")),
+            mcp_output_dir=str(payload.get("mcp_output_dir") or "").strip(),
         )
 
     def save(self, preferences: UIPreferences) -> Path:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(asdict(preferences), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            try:
+                json.dump(asdict(preferences), temporary, ensure_ascii=False, indent=2)
+                temporary.close()
+                temporary_path.replace(self.path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
         return self.path
 
 

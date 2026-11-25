@@ -78,11 +78,14 @@ jobs:
           mode: api
 ```
 
-UOS AI MCP：
+### UOS AI MCP
 
-- MCP 启动入口：`scripts/appstore-mcp`
-- 示例配置：[appstore/examples/uos-ai-mcp.example.json](appstore/examples/uos-ai-mcp.example.json)
+- 桌面版在「偏好设置 → MCP 设置」开启服务。保存设置后，把「复制客户端配置」得到的 JSON 合并到 MCP 客户端，客户端连接时通过标准输入输出启动服务。修改默认输出目录后重新连接即可生效。
+- 开启服务即可解析包、查询商店能力和预检投递表。使用投递和安装截图工具时，需勾选「允许应用投递与安装截图」。商店登录可通过客户端环境变量 `APPSTORE_USERNAME` 和 `APPSTORE_PASSWORD` 配置。
+- 源码版可用 `scripts/appstore-mcp` 独立启动，优先使用项目的 `.venv`。参考[示例配置](appstore/examples/uos-ai-mcp.example.json)。
 - 关键工具：
+  - `inspect_packages` 支持 `.deb`、`.uab` 和 `.layer`，区分 `loongarch64` 和 `loong64`。
+  - `get_capabilities` 按包类型和架构查询已同步的系统线及可选版本。
   - `prepare_new_app_workbook`：按真实包生成新应用提审 workbook
   - `upload_workbook`：按 workbook 执行新应用提审或批量更新
   - `upload_packages` / `auto_upload_packages`：只用于已有应用更新

@@ -32,6 +32,7 @@ signals:
     void updateHistoryRequested(const QString &appId, const QString &appName);
     void draftDeleteRequested(const QString &detailId, const QString &appName);
     void settingsRequested();
+    void mcpSettingsRequested();
 
 private:
     void buildUi();

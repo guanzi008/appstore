@@ -3,4 +3,8 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m appstore.mcp_server "$@"
+MCP_PYTHON=${APPSTORE_MCP_PYTHON:-"$REPO_ROOT/.venv/bin/python3"}
+if [ -z "${APPSTORE_MCP_PYTHON:-}" ] && [ ! -x "$MCP_PYTHON" ]; then
+    MCP_PYTHON=python3
+fi
+exec "$MCP_PYTHON" -m appstore.mcp_server "$@"

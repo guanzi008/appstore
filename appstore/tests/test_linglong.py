@@ -1,4 +1,5 @@
 import json
+import struct
 import unittest
 import zipfile
 from pathlib import Path
@@ -25,7 +26,32 @@ def _write_native_layer(path: Path, info: dict) -> None:
     path.write_bytes(NATIVE_LAYER_MAGIC + b"\0\0\0" + len(payload).to_bytes(4, "little") + payload + b"...entries")
 
 
+def _write_native_uab(path: Path, layers: list[dict]) -> None:
+    names = b"\0.shstrtab\0linglong.meta\0"
+    metadata = json.dumps({"layers": layers}).encode("utf-8")
+    metadata_offset = 64 + len(names)
+    sections_offset = (metadata_offset + len(metadata) + 7) & ~7
+    identity = b"\x7fELF\x02\x01\x01" + b"\0" * 9
+    header = struct.pack("<16sHHIQQQIHHHHHH", identity, 3, 258, 1, 0, 0, sections_offset, 0, 64, 0, 0, 64, 3, 1)
+    names_section = struct.pack("<IIQQQQIIQQ", 1, 3, 0, 0, 64, len(names), 0, 0, 1, 0)
+    metadata_section = struct.pack("<IIQQQQIIQQ", names.index(b"linglong.meta"), 1, 0, 0, metadata_offset, len(metadata), 0, 0, 1, 0)
+    leading_data = (header + names + metadata).ljust(sections_offset, b"\0")
+    path.write_bytes(leading_data + bytes(64) + names_section + metadata_section)
+
+
 class LinglongPackageInfoTests(unittest.TestCase):
+    def test_reads_native_elf_uab_with_two_modules_of_one_application(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            package_path = Path(tmpdir) / "native.uab"
+            info = {"kind": "app", "id": "org.deepin.demo", "version": "1.2.3", "arch": ["loongarch64"]}
+            _write_native_uab(package_path, [{"info": {**info, "module": module}} for module in ("binary", "develop")])
+
+            package_info = read_uab_package_info(package_path)
+
+            self.assertEqual(package_info.pkg_name, "org.deepin.demo")
+            self.assertEqual(package_info.pkg_version, "1.2.3")
+            self.assertEqual(package_info.pkg_arch, "loongarch64")
+
     def test_read_uab_package_info_reads_nested_app_layer_metadata(self) -> None:
         with TemporaryDirectory() as tmpdir:
             package_path = Path(tmpdir) / "demo.uab"

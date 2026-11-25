@@ -6,29 +6,45 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from appstore.appstore_client import AppStoreClient
-from appstore.capabilities import load_capability_cache, sync_capabilities_to_cache
+from appstore.capabilities import baseline_selectable, load_capability_cache, sync_capabilities_to_cache, system_lines_for_arch
 from appstore.examples.generate_template import generate_template
 from appstore.inspectors import read_package_info
 from appstore.new_app_workbook import prepare_new_app_workbook
+from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from appstore.upload_batch import main as upload_batch_main
 
 LOGGER = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CACHE_DIR = REPO_ROOT / "appstore" / "cache" / "capabilities"
-DEFAULT_SESSION_CACHE_DIR = REPO_ROOT / "appstore" / "cache" / "session-state"
-DEFAULT_OUTPUT_ROOT = Path(os.environ.get("APPSTORE_MCP_OUTPUT_ROOT", "")) if os.environ.get("APPSTORE_MCP_OUTPUT_ROOT", "").strip() else Path(tempfile.gettempdir()) / "appstore-mcp-output"
-DEFAULT_JOB_ROOT = Path(os.environ.get("APPSTORE_MCP_JOB_ROOT", "")) if os.environ.get("APPSTORE_MCP_JOB_ROOT", "").strip() else Path(tempfile.gettempdir()) / "appstore-mcp-jobs"
+DEFAULT_CACHE_DIR = Path(
+    os.environ.get("APPSTORE_MCP_CACHE_DIR")
+    or os.environ.get("UTPUBLISHER_CAPABILITY_CACHE_DIR")
+    or REPO_ROOT / "appstore" / "cache" / "capabilities"
+).expanduser()
+DEFAULT_SESSION_CACHE_DIR = Path(
+    os.environ.get("UTPUBLISHER_SESSION_CACHE_DIR") or REPO_ROOT / "appstore" / "cache" / "session-state"
+).expanduser()
+DEFAULT_OUTPUT_ROOT = Path(os.environ.get("UTPUBLISHER_OUTPUT_ROOT") or tempfile.gettempdir()) / "appstore-mcp-output"
+_USER_STATE_ROOT = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state").expanduser()
+DEFAULT_JOB_ROOT = Path(os.environ.get("APPSTORE_MCP_JOB_ROOT") or _USER_STATE_ROOT / "utpublisher" / "mcp-jobs").expanduser()
 DEFAULT_AI_BASE_URL = os.environ.get("APPSTORE_AI_BASE_URL", "http://127.0.0.1:8787/v1")
 DEFAULT_AI_MODEL = os.environ.get("APPSTORE_AI_MODEL", "openai-codex/gpt-5.4")
 DEFAULT_SUDO_PASSWORD = os.environ.get("APPSTORE_SUDO_PASSWORD", "")
-_SERVER_PROTOCOL_VERSION = "2025-03-26"
+_SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
+_SECRET_OPTIONS = {"password", "sudo_password", "ai_api_key"}
+_JOB_SECRETS_ENV = "APPSTORE_MCP_JOB_SECRETS"
+_ACTION_TOOLS = {
+    "upload_workbook", "upload_packages", "capture_packages", "start_capture_packages",
+    "auto_upload_packages", "start_auto_upload_packages",
+}
 
 
 class MCPError(RuntimeError):
@@ -56,11 +72,13 @@ def _json_text(payload: dict[str, Any]) -> str:
 
 
 def _result_payload(payload: dict[str, Any], *, summary: str) -> dict[str, Any]:
-    text = _result_text(payload, summary=summary)
+    failed = "exit_code" in payload and _command_failed(payload)
+    if failed:
+        summary = f"{summary.removesuffix(' completed')} failed"
     return {
-        "content": [{"type": "text", "text": text}],
+        "content": [{"type": "text", "text": _result_text(payload, summary=summary)}],
         "structuredContent": payload,
-        "isError": False,
+        "isError": failed,
     }
 
 
@@ -304,11 +322,11 @@ def _reject_unknown_fields(params: dict[str, Any], *, allowed_fields: set[str], 
 
 
 def _timestamp_label() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
 def _default_output_dir(prefix: str) -> Path:
-    root = DEFAULT_OUTPUT_ROOT
+    root = Path(os.environ.get("APPSTORE_MCP_OUTPUT_ROOT") or DEFAULT_OUTPUT_ROOT).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{prefix}-{_timestamp_label()}"
 
@@ -336,6 +354,27 @@ def _append_option(argv: list[str], option: str, value: Any) -> None:
     if text == "":
         return
     argv.extend([flag, text])
+
+
+def _redact_argv(argv: list[str]) -> list[str]:
+    flags = {f"--{option.replace('_', '-')}" for option in _SECRET_OPTIONS}
+    redacted = []
+    hide_next = False
+    for item in argv:
+        if hide_next:
+            redacted.append("[redacted]")
+            hide_next = False
+            continue
+        flag, separator, _ = item.partition("=")
+        redacted.append(f"{flag}=[redacted]" if separator and flag in flags else item)
+        hide_next = item in flags
+    return redacted
+
+
+def _command_failed(result: dict[str, Any]) -> bool:
+    if result.get("exit_code", 0) != 0:
+        return True
+    return any(status == "failed" or status.endswith("_failed") for status in result.get("status_counts", {}))
 
 
 def _report_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -379,11 +418,13 @@ def _capture_details_from_report(report_rows: Any) -> list[dict[str, Any]]:
 
 
 def _job_root() -> Path:
-    DEFAULT_JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    DEFAULT_JOB_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     return DEFAULT_JOB_ROOT
 
 
 def _job_dir(job_id: str) -> Path:
+    if not job_id or job_id in {".", ".."} or Path(job_id).name != job_id:
+        raise MCPError("invalid job_id", code=-32602)
     return _job_root() / job_id
 
 
@@ -408,8 +449,14 @@ def _job_stderr_path(job_id: str) -> Path:
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+        try:
+            json.dump(payload, temporary, ensure_ascii=False, indent=2)
+            temporary.close()
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
@@ -461,18 +508,22 @@ def _load_job_payload(job_id: str) -> dict[str, Any]:
     result_path = _job_result_path(job_id)
     if result_path.exists():
         result = _read_json_file(result_path)
+        if isinstance(result.get("argv"), list):
+            result["argv"] = _redact_argv(result["argv"])
     return _job_summary_payload(job_id, state, result)
 
 
 def _spawn_async_job(*, job_type: str, spec: dict[str, Any]) -> dict[str, Any]:
     job_id = _new_job_id(job_type)
     job_dir = _job_dir(job_id)
-    job_dir.mkdir(parents=True, exist_ok=True)
+    job_dir.mkdir(mode=0o700)
     request_path = _job_request_path(job_id)
     state_path = _job_state_path(job_id)
     stdout_path = _job_stdout_path(job_id)
     stderr_path = _job_stderr_path(job_id)
 
+    options = dict(spec["options"])
+    secrets = {key: options.pop(key) for key in _SECRET_OPTIONS if key in options}
     _write_json_file(
         request_path,
         {
@@ -480,39 +531,43 @@ def _spawn_async_job(*, job_type: str, spec: dict[str, Any]) -> dict[str, Any]:
             "job_type": job_type,
             "created_at": _utc_now_iso(),
             **spec,
+            "options": options,
         },
     )
-    _write_json_file(
-        state_path,
-        {
-            "job_id": job_id,
-            "job_type": job_type,
-            "status": "queued",
-            "message": "job queued",
-            "created_at": _utc_now_iso(),
-        },
-    )
+    queued_state = {
+        "job_id": job_id,
+        "job_type": job_type,
+        "status": "queued",
+        "message": "job queued",
+        "created_at": _utc_now_iso(),
+    }
+    _write_json_file(state_path, queued_state)
 
     env = os.environ.copy()
-    stdout_handle = stdout_path.open("w", encoding="utf-8")
-    stderr_handle = stderr_path.open("w", encoding="utf-8")
+    env[_JOB_SECRETS_ENV] = json.dumps(secrets)
+    env["APPSTORE_MCP_JOB_ROOT"] = str(_job_root().resolve())
+    if Path(sys.executable).name == "utpublisher-python-backend":
+        argv = [sys.executable, "mcp_job", str(request_path)]
+    else:
+        argv = [sys.executable, "-m", "appstore.mcp_job_runner", str(request_path)]
     try:
-        process = subprocess.Popen(
-            [sys.executable, "-m", "appstore.mcp_job_runner", str(request_path)],
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            env=env,
-            start_new_session=True,
-        )
-    finally:
-        stdout_handle.close()
-        stderr_handle.close()
+        with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
+            process = subprocess.Popen(
+                argv, stdin=subprocess.DEVNULL, stdout=stdout_handle, stderr=stderr_handle, env=env, start_new_session=True,
+            )
+    except OSError as exc:
+        _write_json_file(state_path, {**queued_state, "status": "failed", "message": str(exc), "finished_at": _utc_now_iso()})
+        raise MCPError(f"unable to start job {job_id}: {exc}") from exc
+    def wait_for_worker() -> None:
+        exit_code = process.wait()
+        if exit_code == 0:
+            return
+        state = _read_json_file(state_path)
+        if state.get("status") in {"queued", "running"}:
+            state.update(status="failed", message=f"worker exited with code {exit_code}", finished_at=_utc_now_iso())
+            _write_json_file(state_path, state)
 
-    queued_state = _read_json_file(state_path)
-    queued_state["pid"] = process.pid
-    queued_state["message"] = "job started"
-    _write_json_file(state_path, queued_state)
+    threading.Thread(target=wait_for_worker, daemon=True).start()
     return _job_summary_payload(job_id, queued_state)
 
 
@@ -546,7 +601,8 @@ def _run_upload_batch_command(
 
     exit_code = 0
     try:
-        exit_code = int(upload_batch_main(argv))
+        with redirect_stdout(sys.stderr):
+            exit_code = int(upload_batch_main(argv))
     except SystemExit as exc:
         exit_code = int(exc.code or 0)
 
@@ -557,7 +613,7 @@ def _run_upload_batch_command(
 
     result = {
         "command": command,
-        "argv": argv,
+        "argv": _redact_argv(argv),
         "exit_code": exit_code,
         "output_dir": str(output_dir),
         "report_path": str(report_path) if report_path.exists() else "",
@@ -608,6 +664,8 @@ def _tool_inspect_packages(params: dict[str, Any]) -> dict[str, Any]:
     for package_path in package_paths:
         family, package_format = _infer_package_kind(package_path)
         info = read_package_info(family, package_format, package_path)
+        architecture = normalize_package_arch(info.pkg_arch)
+        store_arch = ARCHITECTURES.get(architecture)
         packages.append(
             {
                 "path": str(package_path),
@@ -616,12 +674,55 @@ def _tool_inspect_packages(params: dict[str, Any]) -> dict[str, Any]:
                 "pkg_name": info.pkg_name,
                 "pkg_version": info.pkg_version,
                 "pkg_arch": info.pkg_arch,
+                "architecture": architecture,
+                "arch_code": store_arch.code if store_arch else "",
                 "pkg_size": info.pkg_size,
                 "sha256": info.sha256,
             }
         )
     payload = {"package_count": len(packages), "packages": packages}
     return _result_payload(payload, summary=f"inspect_packages completed: {len(packages)} package(s)")
+
+
+def _tool_get_capabilities(params: dict[str, Any]) -> dict[str, Any]:
+    _reject_unknown_fields(params, allowed_fields={"cache_dir", "package_family", "architecture"}, tool_name="get_capabilities")
+    cache_dir = Path(_ensure_string(params.get("cache_dir"), field_name="cache_dir", default=str(DEFAULT_CACHE_DIR))).expanduser().resolve()
+    family = _ensure_string(params.get("package_family"), field_name="package_family").lower()
+    if family not in {"", "deb", "linglong"}:
+        raise MCPError(f"unsupported package_family: {family}", code=-32602)
+    architecture = _ensure_string(params.get("architecture"), field_name="architecture")
+    arch = ARCHITECTURES.get(normalize_package_arch(architecture))
+    if architecture and arch is None:
+        raise MCPError(f"unsupported architecture: {architecture}", code=-32602)
+    arches = (arch,) if arch else tuple(ARCHITECTURES.values())
+    try:
+        cache = load_capability_cache(cache_dir)
+    except FileNotFoundError as exc:
+        raise MCPError("找不到商店能力缓存。请在应用中登录并同步商店数据，或调用 sync_capabilities。") from exc
+
+    system_lines = []
+    for package_family in (family,) if family else ("deb", "linglong"):
+        lines_by_arch = {arch.manifest_value: system_lines_for_arch(cache, package_family, arch.code) for arch in arches}
+        for code, line in system_lines_for_arch(cache, package_family, "").items():
+            supported_arches = [arch for arch, lines in lines_by_arch.items() if code in lines]
+            if not supported_arches:
+                continue
+            system_lines.append({
+                "package_family": package_family,
+                "code": code,
+                "label": line.label,
+                "architectures": supported_arches,
+                "baselines": [
+                    {
+                        "id": option.baseline_id,
+                        "version": option.minor_version,
+                        "selectable": baseline_selectable(package_family, code, option.minor_version),
+                    }
+                    for option in cache.baseline_options.get(f"{package_family}:{code}", ())
+                ],
+            })
+    payload = {"cache_dir": str(cache_dir), "generated_at": cache.generated_at, "system_lines": system_lines}
+    return {"content": [{"type": "text", "text": _json_text(payload)}], "structuredContent": payload, "isError": False}
 
 
 def _tool_sync_capabilities(params: dict[str, Any]) -> dict[str, Any]:
@@ -643,7 +744,13 @@ def _tool_sync_capabilities(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_generate_template(params: dict[str, Any]) -> dict[str, Any]:
-    output_path = Path(_ensure_string(params.get("output_path"), field_name="output_path", default=str(REPO_ROOT / "appstore" / "examples" / "template.xlsx"))).expanduser().resolve()
+    output_path_value = _ensure_string(params.get("output_path"), field_name="output_path")
+    if output_path_value:
+        output_path = Path(output_path_value).expanduser().resolve()
+    elif os.environ.get("APPSTORE_MCP_OUTPUT_ROOT"):
+        output_path = _default_output_dir("template") / "template.xlsx"
+    else:
+        output_path = REPO_ROOT / "appstore" / "examples" / "template.xlsx"
     capability_cache = _ensure_string(params.get("capabilities_cache"), field_name="capabilities_cache", default=str(DEFAULT_CACHE_DIR))
     generate_template(output_path, capability_cache_path=capability_cache)
     payload = {
@@ -664,7 +771,8 @@ def _tool_prepare_new_app_workbook(params: dict[str, Any]) -> dict[str, Any]:
         first_package = Path(package_paths[0])
         family, package_format = _infer_package_kind(first_package)
         info = read_package_info(family, package_format, first_package)
-        output_path = first_package.parent / f"{info.pkg_name}-submission.xlsx"
+        output_parent = _default_output_dir("workbook") if os.environ.get("APPSTORE_MCP_OUTPUT_ROOT") else first_package.parent
+        output_path = output_parent / f"{info.pkg_name}-submission.xlsx"
 
     prepared = prepare_new_app_workbook(
         packages=package_paths,
@@ -702,7 +810,7 @@ def _tool_prepare_new_app_workbook(params: dict[str, Any]) -> dict[str, Any]:
         "ready_for_upload": prepared.ready_for_upload,
         "next_actions": [
             "如缺少 icon_path 或 screenshot_*，先准备素材或调用 capture_packages。",
-            "如缺少 system_line_codes，请结合 sync_capabilities 返回的能力缓存补全系统线。",
+            "如缺少 system_line_codes，请用 get_capabilities 查询各架构的系统线。",
             "完成素材和文案后再调用 upload_workbook。",
         ],
     }
@@ -1031,7 +1139,7 @@ def _tool_auto_upload_packages(params: dict[str, Any]) -> dict[str, Any]:
         positional=package_paths,
         output_dir=output_dir,
         options=options,
-        report_name="report.json",
+        report_name="upload/report.json",
     )
     result["workflow_hint"] = _workflow_hint_from_report(result.get("report"))
     capture_report_path = output_dir / "capture" / "capture-report.json"
@@ -1130,7 +1238,7 @@ def _tool_start_auto_upload_packages(params: dict[str, Any]) -> dict[str, Any]:
             "positional": package_paths,
             "output_dir": str(output_dir),
             "options": options,
-            "report_name": "report.json",
+            "report_name": "upload/report.json",
             "postprocess": "auto-upload",
         },
     )
@@ -1149,7 +1257,7 @@ def _tool_get_job_status(params: dict[str, Any]) -> dict[str, Any]:
 TOOLS: dict[str, MCPTool] = {
     "inspect_packages": MCPTool(
         name="inspect_packages",
-        description="解析真实包文件的包名、版本、架构、大小和 sha256。常用于提审前确认多架构包是否一致。",
+        description="解析 DEB、玲珑 UAB 和 Layer 的包名、版本、架构、大小和 sha256，区分 loongarch64 和 loong64。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1163,6 +1271,20 @@ TOOLS: dict[str, MCPTool] = {
         },
         handler=_tool_inspect_packages,
     ),
+    "get_capabilities": MCPTool(
+        name="get_capabilities",
+        description="从商店能力缓存查询可选系统线及版本，可按包类型和架构筛选。生成多架构投递表前可用来选择系统线。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "cache_dir": {"type": "string", "description": "能力缓存目录或 JSON 文件。"},
+                "package_family": {"type": "string", "enum": ["deb", "linglong"]},
+                "architecture": {"type": "string", "description": "如 amd64、arm64、loongarch64 或 loong64。"},
+            },
+            "additionalProperties": False,
+        },
+        handler=_tool_get_capabilities,
+    ),
     "sync_capabilities": MCPTool(
         name="sync_capabilities",
         description="登录应用商店并同步系统线、baseline 能力缓存。新应用 workbook 生成或真实上传前应先调用一次。",
@@ -1171,7 +1293,7 @@ TOOLS: dict[str, MCPTool] = {
             "properties": {
                 "username": {"type": "string", "description": "应用商店用户名。可省略并改用 APPSTORE_USERNAME。"},
                 "password": {"type": "string", "description": "应用商店密码。可省略并改用 APPSTORE_PASSWORD。"},
-                "cache_dir": {"type": "string", "description": "能力缓存目录。默认使用仓库内 cache/capabilities。"},
+                "cache_dir": {"type": "string", "description": "能力缓存目录。默认使用当前 MCP 服务的缓存目录。"},
             },
         },
         handler=_tool_sync_capabilities,
@@ -1195,8 +1317,8 @@ TOOLS: dict[str, MCPTool] = {
             "type": "object",
             "properties": {
                 "packages": {"type": "array", "items": {"type": "string"}, "description": "真实包文件绝对路径列表。"},
-                "output_path": {"type": "string", "description": "输出 workbook 路径。默认写到首个包所在目录下的 <pkg_name>-submission.xlsx。"},
-                "capabilities_cache": {"type": "string", "description": "能力缓存目录。默认使用仓库内 cache/capabilities。"},
+                "output_path": {"type": "string", "description": "输出 workbook 路径。桌面版默认写入 MCP 输出目录，源码版默认写在首个包旁边。"},
+                "capabilities_cache": {"type": "string", "description": "能力缓存目录。默认使用当前 MCP 服务的缓存目录。"},
                 "app_key": {"type": "string", "description": "可选应用键。默认直接使用 pkg_name。"},
                 "app_name_zh": {"type": "string", "description": "应用中文名。缺省时会先回填 pkg_name，稍后建议人工确认。"},
                 "category_id": {"type": "integer", "description": "应用分类 ID。缺省为 1。"},
@@ -1501,7 +1623,9 @@ TOOLS: dict[str, MCPTool] = {
 
 
 def _handle_initialize(request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-    protocol_version = _ensure_string(params.get("protocolVersion"), field_name="protocolVersion", default=_SERVER_PROTOCOL_VERSION) or _SERVER_PROTOCOL_VERSION
+    protocol_version = _ensure_string(params.get("protocolVersion"), field_name="protocolVersion")
+    if protocol_version not in _SUPPORTED_PROTOCOL_VERSIONS:
+        protocol_version = _SUPPORTED_PROTOCOL_VERSIONS[0]
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -1516,23 +1640,25 @@ def _handle_initialize(request_id: Any, params: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _handle_tools_list(request_id: Any) -> dict[str, Any]:
+def _handle_tools_list(request_id: Any, available_tools: dict[str, MCPTool]) -> dict[str, Any]:
     tools = [
         {
             "name": tool.name,
             "description": tool.description,
             "inputSchema": tool.input_schema,
         }
-        for tool in TOOLS.values()
+        for tool in available_tools.values()
     ]
     return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
 
 
-def _handle_tools_call(request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+def _handle_tools_call(request_id: Any, params: dict[str, Any], available_tools: dict[str, MCPTool]) -> dict[str, Any]:
     tool_name = _ensure_string(params.get("name"), field_name="name")
     if not tool_name:
         raise MCPError("tools/call requires name", code=-32602)
-    tool = TOOLS.get(tool_name)
+    if tool_name in TOOLS and tool_name not in available_tools:
+        raise MCPError("请在偏好设置的 MCP 设置中允许投递与自动截图。")
+    tool = available_tools.get(tool_name)
     if tool is None:
         raise MCPError(f"unknown tool: {tool_name}", code=-32601)
     arguments = params.get("arguments")
@@ -1551,7 +1677,7 @@ def _error_response(request_id: Any, *, code: int, message: str) -> dict[str, An
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
+def _dispatch(message: dict[str, Any], *, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> dict[str, Any] | None:
     method = message.get("method")
     request_id = message.get("id")
     params = message.get("params")
@@ -1568,13 +1694,15 @@ def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     if method == "initialize":
+        if get_tools is not None:
+            get_tools()
         return _handle_initialize(request_id, params)
     if method == "ping":
         return _success_response(request_id, {})
     if method == "tools/list":
-        return _handle_tools_list(request_id)
+        return _handle_tools_list(request_id, get_tools() if get_tools is not None else TOOLS)
     if method == "tools/call":
-        return _handle_tools_call(request_id, params)
+        return _handle_tools_call(request_id, params, get_tools() if get_tools is not None else TOOLS)
     raise MCPError(f"unsupported method: {method}", code=-32601)
 
 
@@ -1610,10 +1738,12 @@ def _extract_message(buffer: bytearray) -> dict[str, Any] | None:
                 try:
                     content_length = int(value.strip())
                 except ValueError as exc:
+                    buffer.clear()
                     raise MCPError("invalid Content-Length", code=-32700) from exc
                 break
-        if content_length is None:
-            raise MCPError("missing Content-Length", code=-32700)
+        if content_length is None or content_length <= 0:
+            buffer.clear()
+            raise MCPError("invalid Content-Length", code=-32700)
         total = header_end + separator_size + content_length
         if len(buffer) < total:
             return None
@@ -1636,7 +1766,7 @@ def _write_message(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def serve() -> int:
+def serve(*, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> int:
     _configure_logging()
     buffer = bytearray()
     stdin = sys.stdin.buffer
@@ -1646,12 +1776,16 @@ def serve() -> int:
             break
         buffer.extend(chunk)
         while True:
-            message = _extract_message(buffer)
+            try:
+                message = _extract_message(buffer)
+            except MCPError as exc:
+                _write_message(_error_response(None, code=exc.code, message=str(exc)))
+                continue
             if message is None:
                 break
             request_id = message.get("id")
             try:
-                response = _dispatch(message)
+                response = _dispatch(message, get_tools=get_tools)
             except MCPError as exc:
                 response = None if request_id is None else _error_response(request_id, code=exc.code, message=str(exc))
             except Exception as exc:
@@ -1660,6 +1794,24 @@ def serve() -> int:
             if response is not None:
                 _write_message(response)
     return 0
+
+
+def serve_from_preferences() -> int:
+    from ui.preferences import PreferenceStore
+
+    store = PreferenceStore()
+    output_dir = store.load().mcp_output_dir
+    os.environ["APPSTORE_MCP_OUTPUT_ROOT"] = output_dir or os.environ.get("APPSTORE_MCP_OUTPUT_ROOT") or str(DEFAULT_OUTPUT_ROOT)
+
+    def get_tools() -> dict[str, MCPTool]:
+        preferences = store.load()
+        if not preferences.mcp_enabled:
+            raise MCPError("MCP 已关闭，请先在应用投递助手的偏好设置中开启。")
+        if preferences.mcp_allow_actions:
+            return TOOLS
+        return {name: tool for name, tool in TOOLS.items() if name not in _ACTION_TOOLS}
+
+    return serve(get_tools=get_tools)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -78,11 +78,14 @@ To update copy, compatibility ranges, or batch applications from a workbook:
           mode: api
 ```
 
-UOS AI MCP:
+### UOS AI MCP
 
-- MCP server entry: `scripts/appstore-mcp`
-- Example config: [appstore/examples/uos-ai-mcp.example.json](appstore/examples/uos-ai-mcp.example.json)
+- In the desktop app, open Preferences → MCP Settings and enable the service. Save the settings and merge the copied JSON into your MCP client configuration. The client starts the service over stdio. Reconnect after changing the default output directory.
+- Package inspection, capability lookup, and workbook validation are available once the service is enabled. Enable submission and installation for screenshots to use the corresponding tools. Set `APPSTORE_USERNAME` and `APPSTORE_PASSWORD` in the client environment for store login.
+- From a source checkout, `scripts/appstore-mcp` starts the server independently and uses the project `.venv` when available. See the [example configuration](appstore/examples/uos-ai-mcp.example.json).
 - Key tools:
+  - `inspect_packages` reads `.deb`, `.uab`, and `.layer` packages and distinguishes `loongarch64` from `loong64`.
+  - `get_capabilities` lists synced system lines and selectable versions by package family and architecture.
   - `prepare_new_app_workbook`: build a real submission workbook from actual packages
   - `upload_workbook`: submit a new app or batch update from a workbook
   - `upload_packages` / `auto_upload_packages`: existing-app update only

@@ -19,6 +19,7 @@ from appstore.appstore_client import (
 )
 from appstore.browser_runtime import capture_browser_session_state, wait_for_logged_in_portal_state
 from appstore.capabilities import CapabilityCache, load_capability_cache, sync_capabilities_to_cache, system_lines_for_arch
+from appstore.capabilities import baseline_selectable as preference_baseline_selectable
 from appstore.capture_workflow import CaptureOptions, CapturePackageResult, capture_packages
 from appstore.models import AppRecord, PackageRecord, ReleaseRecord, RowResult, TargetRecord
 from appstore.platforms import PlatformMappingError, normalize_package_arch, resolve_store_arch
@@ -386,16 +387,6 @@ def build_target_options(
                 )
             )
     return tuple(result)
-
-
-def preference_baseline_selectable(package_family: str, system_line: str, minor_version: str) -> bool:
-    if package_family != "linglong" or system_line not in {"2", "6"}:
-        return True
-    # The developer portal disables earlier professional and education baselines for Linglong.
-    try:
-        return not float(minor_version) < 1075
-    except ValueError:
-        return True
 
 
 def default_target_ranges(

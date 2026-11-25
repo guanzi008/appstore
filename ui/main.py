@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import sys
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -44,7 +44,7 @@ from ui.package_meta import (
     PackageGroup,
     find_package_files,
 )
-from ui.preferences import DEFAULT_PREFERENCES_PATH, PreferenceStore, UIPreferences, remember_value
+from ui.preferences import DEFAULT_PREFERENCES_PATH, PreferenceStore, remember_value
 from ui.qt_compat import (
     CHECKED,
     QT_BINDING,
@@ -1118,7 +1118,8 @@ class MainWindow(QtWidgets.QMainWindow):
             recent_category_ids = remember_value(recent_category_ids, category_id)
         if region.strip() and all(token.strip().isdigit() for token in region.split(",")):
             recent_regions = remember_value(recent_regions, region)
-        self.preferences = UIPreferences(
+        self.preferences = replace(
+            self.preferences,
             recent_category_ids=recent_category_ids,
             recent_regions=recent_regions,
             last_output_dir=output_dir if output_dir is not None else self.preferences.last_output_dir,
@@ -1128,11 +1129,6 @@ class MainWindow(QtWidgets.QMainWindow):
             last_session_account=(
                 session_account if session_account is not None else self.preferences.last_session_account
             ),
-            remember_credentials=self.preferences.remember_credentials,
-            remembered_username=self.preferences.remembered_username,
-            remembered_password=self.preferences.remembered_password,
-            default_target_system_lines=self.preferences.default_target_system_lines,
-            default_target_ranges=self.preferences.default_target_ranges,
         )
         self.preference_store.save(self.preferences)
         current_category = category_id or self._combo_text(self.category_combo) or "1"

@@ -190,6 +190,16 @@ def system_lines_for_arch(cache: CapabilityCache, package_family: str, arch_code
     return {code: line for code, line in lines.items() if code != "0" and (allowed is None or code in allowed)}
 
 
+def baseline_selectable(package_family: str, system_line: str, minor_version: str) -> bool:
+    if package_family != "linglong" or system_line not in {"2", "6"}:
+        return True
+    # The developer portal disables earlier professional and education baselines for Linglong.
+    try:
+        return not float(minor_version) < 1075
+    except ValueError:
+        return True
+
+
 def build_system_templates(cache: CapabilityCache) -> tuple[SystemTemplate, ...]:
     templates: list[SystemTemplate] = []
 

@@ -4,6 +4,7 @@ import json
 import re
 import sys
 import traceback
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -1244,6 +1245,9 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
         "remember_credentials": preferences.remember_credentials,
         "remembered_username": preferences.remembered_username,
         "remembered_password": preferences.remembered_password,
+        "mcp_enabled": preferences.mcp_enabled,
+        "mcp_allow_actions": preferences.mcp_allow_actions,
+        "mcp_output_dir": preferences.mcp_output_dir,
         "default_target_system_lines": {
             str(key): list(values)
             for key, values in preferences.default_target_system_lines.items()
@@ -1654,19 +1658,12 @@ def command_login_credentials(payload: dict) -> dict:
     capability_cache = _load_capabilities(login_context)
     preference_store = PreferenceStore()
     current_preferences = preference_store.load()
-    preferences = UIPreferences(
-        recent_category_ids=current_preferences.recent_category_ids,
-        recent_regions=current_preferences.recent_regions,
-        last_output_dir=current_preferences.last_output_dir,
-        last_asset_dir=current_preferences.last_asset_dir,
-        last_release_key=current_preferences.last_release_key,
-        last_pkg_channel=current_preferences.last_pkg_channel,
+    preferences = replace(
+        current_preferences,
         last_session_account=username,
         remember_credentials=remember_credentials,
         remembered_username=username if remember_credentials else "",
         remembered_password=password if remember_credentials else "",
-        default_target_system_lines=current_preferences.default_target_system_lines,
-        default_target_ranges=current_preferences.default_target_ranges,
     )
     preference_store.save(preferences)
     return {
@@ -1872,11 +1869,7 @@ def command_save_preferences(payload: dict) -> dict:
     if not isinstance(preferences_payload, dict):
         raise ValueError("preferences must be an object")
     preference_store = PreferenceStore()
-    default_ranges = (
-        normalize_default_target_ranges(preferences_payload["default_target_ranges"])
-        if "default_target_ranges" in preferences_payload
-        else preference_store.load().default_target_ranges
-    )
+    preferences_payload = {**_preferences_to_json(preference_store.load()), **preferences_payload}
     preferences = UIPreferences(
         recent_category_ids=tuple(
             str(value).strip()
@@ -1899,7 +1892,10 @@ def command_save_preferences(payload: dict) -> dict:
         default_target_system_lines=_normalize_default_target_system_lines(
             preferences_payload.get("default_target_system_lines", {})
         ),
-        default_target_ranges=default_ranges,
+        default_target_ranges=normalize_default_target_ranges(preferences_payload["default_target_ranges"]),
+        mcp_enabled=_coerce_bool(preferences_payload["mcp_enabled"]),
+        mcp_allow_actions=_coerce_bool(preferences_payload["mcp_allow_actions"]),
+        mcp_output_dir=str(preferences_payload["mcp_output_dir"] or "").strip(),
     )
     path = preference_store.save(preferences)
     return {
@@ -2180,6 +2176,14 @@ def main() -> int:
         return 1
 
     command = sys.argv[1].strip()
+    if command == "mcp":
+        from appstore.mcp_server import serve_from_preferences
+
+        return serve_from_preferences()
+    if command == "mcp_job":
+        from appstore.mcp_job_runner import main as run_mcp_job
+
+        return run_mcp_job(sys.argv[2:])
     handler = COMMANDS.get(command)
     if handler is None:
         print(

@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QKeySequence>
+#include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStyle>
@@ -207,7 +208,12 @@ void SidebarWidget::buildUi()
     auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("偏好设置"), this);
     settingsButton->setObjectName(QStringLiteral("SidebarPlain"));
     settingsButton->setCursor(Qt::PointingHandCursor);
-    connect(settingsButton, &QPushButton::clicked, this, &SidebarWidget::settingsRequested);
+    auto *settingsMenu = new QMenu(settingsButton);
+    auto *systemLineSettings = settingsMenu->addAction(QStringLiteral("系统线与版本"));
+    auto *mcpSettings = settingsMenu->addAction(QStringLiteral("MCP 设置"));
+    connect(systemLineSettings, &QAction::triggered, this, &SidebarWidget::settingsRequested);
+    connect(mcpSettings, &QAction::triggered, this, &SidebarWidget::mcpSettingsRequested);
+    settingsButton->setMenu(settingsMenu);
     layout->addWidget(settingsButton);
 
     auto *userCard = new QFrame(this);

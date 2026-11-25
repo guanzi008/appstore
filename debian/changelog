@@ -1,3 +1,12 @@
+com.uniontech.utpublisher (0.1.8) unstable; urgency=medium
+
+  * Separate system-line defaults from MCP settings in desktop preferences.
+  * Configure MCP access, output and client connections from the desktop app.
+  * Read native Linglong UAB metadata and distinguish both LoongArch package architectures.
+  * Report MCP job failures and keep credentials out of job records.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Wed, 25 Nov 2026 13:43:51 +0800
+
 com.uniontech.utpublisher (0.1.7) unstable; urgency=medium
 
   * Show paginated update history with the original package-specific release notes.

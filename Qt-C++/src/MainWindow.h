@@ -64,6 +64,7 @@ private:
     void logout();
     void syncStoreData();
     void openPreferences();
+    void openMcpPreferences();
     void preprocessAssets();
     void captureScreenshots();
     void chooseIconFile();

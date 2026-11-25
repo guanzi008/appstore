@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from appstore.mcp_server import (
+    _JOB_SECRETS_ENV,
     _capture_details_from_report,
+    _command_failed,
     _job_result_path,
     _job_state_path,
     _read_json_file,
-    _report_summary,
     _run_upload_batch_command,
     _utc_now_iso,
     _workflow_hint_from_report,
@@ -83,19 +85,23 @@ def main(argv: list[str] | None = None) -> int:
         status="running",
         message="job running",
         started_at=_utc_now_iso(),
+        pid=os.getpid(),
     )
     try:
+        secrets = json.loads(os.environ.pop(_JOB_SECRETS_ENV, "{}"))
+        request["options"].update(secrets)
         result = _execute_job(request)
         _write_json_file(_job_result_path(job_id), result)
+        failed = _command_failed(result)
         _mark_state(
             job_id,
             job_type=job_type,
-            status="completed",
-            message="job completed",
+            status="failed" if failed else "completed",
+            message="job failed; see report" if failed else "job completed",
             finished_at=_utc_now_iso(),
-            status_counts=_report_summary(result.get("report", [])),
+            status_counts=result.get("status_counts", {}),
         )
-        return 0
+        return int(failed)
     except Exception as exc:
         _mark_state(
             job_id,

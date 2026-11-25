@@ -22,7 +22,7 @@ from appstore.appstore_client import (
     package_family_from_store_row,
 )
 from appstore.browser_submission import BrowserSubmissionRunner
-from appstore.capabilities import load_capability_cache, sync_capabilities_to_cache
+from appstore.capabilities import baseline_selectable, load_capability_cache, sync_capabilities_to_cache, system_lines_for_arch
 from appstore.capture_workflow import CaptureOptions, capture_packages
 from appstore.examples.generate_template import generate_template
 from appstore.inspectors import inspect_package, read_package_info
@@ -579,7 +579,7 @@ def _existing_pkg_targets(
 
 
 def _default_sup_sys_code(package_info: DebPackageInfo) -> str:
-    arch = package_info.pkg_arch.strip().lower()
+    arch = normalize_package_arch(package_info.pkg_arch)
     if arch in {"loong64", "loongarch64"}:
         return "21"
     return "11"
@@ -587,9 +587,8 @@ def _default_sup_sys_code(package_info: DebPackageInfo) -> str:
 
 def _default_baseline_id(*, capability_cache, package_family: str, sup_sys_code: str) -> str:
     options = capability_cache.baseline_options.get(f"{package_family}:{sup_sys_code}", ())
-    if not options:
-        return ""
-    return options[0].baseline_id
+    return next((option.baseline_id for option in options
+                 if baseline_selectable(package_family, sup_sys_code, option.minor_version)), "")
 
 
 def _normalize_direct_targets(
@@ -609,7 +608,12 @@ def _normalize_direct_targets(
         if targets:
             return targets
 
-    sup_sys_code = _default_sup_sys_code(package_info)
+    arch = resolve_store_arch(package_info.pkg_arch)
+    lines = system_lines_for_arch(capability_cache, package_record.package_family, arch.code)
+    if not lines:
+        raise RuntimeError(f"no store system line available for {package_record.package_family}:{arch.manifest_value}")
+    preferred_line = _default_sup_sys_code(package_info)
+    sup_sys_code = preferred_line if preferred_line in lines else next(iter(lines))
     baseline_id = _default_baseline_id(
         capability_cache=capability_cache,
         package_family=package_record.package_family,
@@ -634,7 +638,7 @@ def _build_direct_packages(
     release_key: str,
     pkg_channel: str,
 ) -> tuple[str, tuple[PackageRecord, ...], dict[str, DebPackageInfo]]:
-    package_infos: list[DebPackageInfo] = []
+    package_infos: dict[str, DebPackageInfo] = {}
     package_records: list[PackageRecord] = []
     pkg_name: str | None = None
     package_family: str | None = None
@@ -652,6 +656,8 @@ def _build_direct_packages(
         elif family != package_family:
             raise RuntimeError(f"cannot mix package families in direct upload: {package_family} vs {family}")
         package_key = package_path.stem
+        while package_key in package_infos:
+            package_key = f"{package_key}-{index}"
         package_records.append(
             PackageRecord(
                 row_id=index,
@@ -665,10 +671,10 @@ def _build_direct_packages(
                 pkg_channel=pkg_channel,
             )
         )
-        package_infos.append(package_info)
+        package_infos[package_key] = package_info
     if pkg_name is None:
         raise RuntimeError("no package files supplied")
-    return pkg_name, tuple(package_records), {record.package_key: info for record, info in zip(package_records, package_infos)}
+    return pkg_name, tuple(package_records), package_infos
 
 
 def _load_release_context(
@@ -1019,7 +1025,7 @@ def _build_app_uploads(client, app: AppRecord) -> dict[str, UploadedFileRef | tu
 def _build_package_uploads(
     client,
     packages: tuple[PackageRecord, ...],
-    package_infos: dict[str, DebPackageInfo] | None = None,
+    package_infos: dict[Path, DebPackageInfo] | None = None,
 ) -> dict[str, UploadedFileRef]:
     package_infos = package_infos or {}
     return {
@@ -1057,19 +1063,6 @@ def _build_override_app_uploads(
     return uploads or None
 
 
-def _normalize_arch_alias(arch: str) -> str:
-    normalized = arch.strip().lower()
-    aliases = {
-        "x86_64": "amd64",
-        "amd64": "amd64",
-        "aarch64": "arm64",
-        "arm64": "arm64",
-        "loongarch64": "loong64",
-        "loong64": "loong64",
-    }
-    return aliases.get(normalized, normalized)
-
-
 def _detect_host_arch() -> str:
     try:
         completed = subprocess.run(
@@ -1080,16 +1073,23 @@ def _detect_host_arch() -> str:
         )
         detected = completed.stdout.strip()
         if detected:
-            return _normalize_arch_alias(detected)
-    except Exception:
+            return normalize_package_arch(detected)
+    except (OSError, subprocess.SubprocessError):
         pass
-    return _normalize_arch_alias(os.uname().machine)
+    arch = normalize_package_arch(os.uname().machine)
+    if arch == "loongarch64":
+        try:
+            if "ld-linux-loongarch-lp64d.so.1" in Path("/proc/self/maps").read_text():
+                return "loong64"
+        except OSError:
+            pass
+    return arch
 
 
 def _select_capture_package_path(
     *,
     package_paths: list[Path],
-    package_infos: dict[str, DebPackageInfo],
+    package_infos: dict[Path, DebPackageInfo],
     capture_package: str = "",
 ) -> Path:
     if capture_package.strip():
@@ -1103,7 +1103,7 @@ def _select_capture_package_path(
     compatible_paths = [
         package_path
         for package_path in package_paths
-        if _normalize_arch_alias(package_infos[package_path.stem].pkg_arch) == host_arch
+        if normalize_package_arch(package_infos[package_path].pkg_arch) == host_arch
     ]
     if len(compatible_paths) == 1:
         return compatible_paths[0]
@@ -1144,7 +1144,7 @@ def _write_direct_package_failure_report(
     results: list[RowResult] = []
     package_info_map = package_infos or {}
     for index, package_path in enumerate(package_paths, start=1):
-        package_info = package_info_map.get(package_path.stem)
+        package_info = package_info_map.get(package_path)
         results.append(
             RowResult(
                 row_id=index,
@@ -1222,7 +1222,7 @@ def _run_direct_upload_packages(
             package_paths=package_paths,
             message=str(exc),
             status="capture_failed",
-            package_infos=package_infos,
+            package_infos={package.file_path: package_infos[package.package_key] for package in packages},
         )
 
     client = AppStoreClient()
@@ -1615,14 +1615,15 @@ def _run_auto_upload_packages(args) -> int:
         )
 
     try:
-        _pkg_name, _packages, package_infos = _build_direct_packages(
+        _pkg_name, packages, package_infos = _build_direct_packages(
             package_paths=package_paths,
             release_key=args.release_key,
             pkg_channel=args.pkg_channel,
         )
+        infos_by_path = {package.file_path: package_infos[package.package_key] for package in packages}
         capture_package_path = _select_capture_package_path(
             package_paths=package_paths,
-            package_infos=package_infos,
+            package_infos=infos_by_path,
             capture_package=args.capture_package,
         )
     except Exception as exc:
@@ -1677,7 +1678,7 @@ def _run_auto_upload_packages(args) -> int:
             package_paths=package_paths,
             message=capture_result.message,
             status="capture_failed",
-            package_infos=package_infos,
+            package_infos=infos_by_path,
         )
 
     screenshot_paths = tuple(capture_result.screenshots[: args.max_screenshots])
@@ -1690,7 +1691,7 @@ def _run_auto_upload_packages(args) -> int:
                 f"require at least {args.min_screenshots}"
             ),
             status="capture_failed",
-            package_infos=package_infos,
+            package_infos=infos_by_path,
         )
 
     username, password = _resolve_credentials(args.username, args.password)

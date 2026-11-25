@@ -8,9 +8,10 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.comments import Comment
 
-from appstore.capabilities import build_system_templates, load_capability_cache
+from appstore.capabilities import baseline_selectable, build_system_templates, load_capability_cache, system_lines_for_arch
 from appstore.inspectors import read_package_info
 from appstore.models import CapabilityCache, PackageInfo, SystemTemplate
+from appstore.platforms import normalize_package_arch, resolve_store_arch
 
 APPS_HEADERS = (
     "app_key",
@@ -104,8 +105,9 @@ def _common_parent(paths: tuple[Path, ...]) -> Path:
 
 
 def _package_sort_key(info: PackageInfo) -> tuple[int, str, str]:
-    arch_order = {"amd64": 0, "arm64": 1, "loong64": 2}
-    return (arch_order.get(info.pkg_arch, 99), info.pkg_arch, info.file_path.name)
+    arch_order = {"amd64": 0, "arm64": 1, "loongarch64": 2, "loong64": 3}
+    arch = normalize_package_arch(info.pkg_arch)
+    return (arch_order.get(arch, 99), arch, info.file_path.name)
 
 
 def _candidate_image(path: Path) -> Path | None:
@@ -257,10 +259,12 @@ def prepare_new_app_workbook(
     templates = tuple(
         template for template in build_system_templates(cache) if template.package_family == family
     )
-    selected_codes = tuple(
-        code for code in dict.fromkeys(code.strip() for code in system_line_codes if str(code).strip()) if any(template.sup_sys_code == code for template in templates)
-    )
-    selected_code_set = set(selected_codes)
+    requested_codes = tuple(dict.fromkeys(str(code).strip() for code in system_line_codes if str(code).strip()))
+    codes_by_arch: dict[str, set[str]] = {}
+    for arch in dict.fromkeys(normalize_package_arch(info.pkg_arch) for info in package_infos):
+        allowed_lines = system_lines_for_arch(cache, family, resolve_store_arch(arch).code)
+        codes_by_arch[arch] = set(requested_codes).intersection(allowed_lines)
+    selected_codes = tuple(code for code in requested_codes if any(code in codes for codes in codes_by_arch.values()))
 
     workbook = Workbook()
     apps_sheet = workbook.active
@@ -322,6 +326,7 @@ def prepare_new_app_workbook(
 
     used_package_keys: set[str] = set()
     for info in package_infos:
+        selected_package_codes = codes_by_arch[normalize_package_arch(info.pkg_arch)]
         package_key = _package_key(normalized_app_key, info, used=used_package_keys)
         row = [
             1,
@@ -333,10 +338,13 @@ def prepare_new_app_workbook(
             f"Auto-filled from real package {info.file_path.name}.",
         ]
         for template in templates:
-            if template.sup_sys_code not in selected_code_set:
+            if template.sup_sys_code not in selected_package_codes:
                 row.extend(["", "", ""])
                 continue
-            baseline_value = template.baseline_options[0].baseline_id if template.baseline_options else ""
+            baseline_value = next((
+                option.baseline_id for option in template.baseline_options
+                if baseline_selectable(family, template.sup_sys_code, option.minor_version)
+            ), "")
             row.extend(["Y", baseline_value, ""])
         packages_sheet.append(row)
 
@@ -366,6 +374,8 @@ def prepare_new_app_workbook(
             missing_fields.append(f"screenshot_{index}")
     if not selected_codes:
         missing_fields.append("system_line_codes")
+    elif any(not codes for codes in codes_by_arch.values()):
+        missing_fields.extend(f"system_line_codes:{arch}" for arch, codes in codes_by_arch.items() if not codes)
 
     placeholder_fields: list[str] = []
     if not app_name_zh.strip():
