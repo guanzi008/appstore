@@ -50,7 +50,7 @@ from appstore.appstore_client import package_family_from_app_detail, package_for
 from appstore.capabilities import system_lines_for_arch
 from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from appstore.translation import LANGUAGE_LABELS
-from appstore.update_payload import draft_detail_id, extract_detail_data, origin_pkg_arch
+from appstore.update_payload import DRAFT_STATUS, draft_detail_id, extract_detail_data, origin_pkg_arch
 from ui.package_meta import PackageGroup, PackageMetadata, analyze_package_group, extract_archive_icon, extract_deb_icon
 from ui.preferences import PreferenceStore, UIPreferences, normalize_default_target_ranges
 from appstore.session_state import SessionStateStore
@@ -924,6 +924,58 @@ def _append_imported_packages(group: dict, previous: dict) -> dict:
     return merged
 
 
+def build_revision_update_group(
+    client, detail_id: str, *, capability_cache, package_paths: tuple[Path, ...] = (),
+    removed_package_ids: tuple[str, ...] = (), asset_dir: Path | None = None,
+) -> tuple[dict, str]:
+    detail = client.get_app_detail(detail_id)
+    data = extract_detail_data(detail)
+    basic = data.get("app_basic_info") or {}
+    revision_id = str(basic.get("id") or "").strip()
+    if revision_id and revision_id != detail_id:
+        raise ValueError("商店返回的版本记录与请求不一致。")
+    app_id = str(basic.get("app_id") or data.get("app_id") or "").strip()
+    package_names = _dedupe_json_strings([
+        basic.get("pkg_name"), data.get("pkg_name"),
+        *(_origin_pkg_value(package, "pkg_name", "packageName") for package in data.get("app_origin_pkgs") or ()
+          if isinstance(package, dict)),
+    ])
+    if not app_id or not package_names:
+        raise ValueError("版本记录缺少应用 ID 或包名。")
+    pkg_name = package_names[0]
+    defaults = build_existing_detail_editor_defaults(detail, fallback_name=pkg_name)
+    match = StoreAppMatch(app_id, detail_id, pkg_name, str(defaults["app_name_zh"]))
+    group = _online_group_from_detail(match, detail, defaults, capability_cache)
+    origin_ids = {package["origin_id"] for package in group["packages"]}
+    if removed_package_ids:
+        if not group["draft_detail_id"]:
+            raise ValueError("只有草稿可以移除已有安装包。")
+        unknown_ids = set(removed_package_ids) - origin_ids
+        if unknown_ids:
+            raise ValueError(f"当前草稿没有安装包记录 {', '.join(sorted(unknown_ids))}。")
+
+    if package_paths:
+        package_group = analyze_package_group(list(package_paths))
+        if package_group.pkg_name != pkg_name or package_group.package_family != group["package_family"]:
+            raise ValueError("安装包的包名或类型与选中的版本记录不一致。")
+        local_group = _group_to_json(
+            package_group, login_context=None, capability_cache=capability_cache,
+            asset_dir=asset_dir, preferences=PreferenceStore().load(),
+        )
+        group = _append_imported_packages(local_group, group)
+
+    if removed_package_ids:
+        group["removed_draft_package_ids"] = list(removed_package_ids)
+        group["packages"] = [package for package in group["packages"] if package.get("origin_id") not in removed_package_ids]
+        retained_paths = {package["path"] for package in group["packages"]}
+        group["targets"] = [target for target in group["targets"] if target["package_path"] in retained_paths]
+    if not group["packages"]:
+        raise ValueError("版本记录需要至少一个安装包。")
+    if asset_dir is not None:
+        group["asset_dir"] = str(asset_dir)
+    return group, str(basic.get("status") or "").strip()
+
+
 def _merge_auto_matched_online_group(base_group: dict, online_group: dict) -> dict:
     merged = dict(base_group)
     always_copy_keys = (
@@ -1178,6 +1230,7 @@ def _store_app_row_to_json(row: dict) -> dict:
         "pkg_version": str(row.get("pkg_version", "") or "").strip(),
         "pkg_mode": str(row.get("pkgMode", "") or row.get("pkg_mode", "") or "").strip(),
         "status": str(row.get("status", "") or "").strip(),
+        "is_draft": str(row.get("status", "")).strip() == DRAFT_STATUS,
         "status_str": str(row.get("statusStr", "") or "").strip(),
         "submit_time": str(row.get("submit_time", "") or "").strip(),
         "website": str(row.get("website", "") or "").strip(),
@@ -1771,12 +1824,12 @@ def command_sync_store_data(payload: dict) -> dict:
     return result
 
 
-def command_list_my_apps(payload: dict) -> dict:
+def command_list_my_apps(payload: dict, *, login_context=None, include_reports: bool = True) -> dict:
     preferred_account = str(payload.get("preferred_account", "")).strip()
     page_num = int(payload.get("page_num", 1) or 1)
     page_size = int(payload.get("page_size", 50) or 50)
     keyword = str(payload.get("keyword", "")).strip()
-    login_context = try_restore_cached_login(preferred_account)
+    login_context = login_context or try_restore_cached_login(preferred_account)
     if login_context is None:
         raise RuntimeError("未找到可用登录态，请先登录。")
     filters = {"name_or_app_id": keyword} if keyword else {}
@@ -1785,7 +1838,7 @@ def command_list_my_apps(payload: dict) -> dict:
         "apps": login_context.client.report_my_apps(),
         "downcounts": login_context.client.report_my_downcounts(),
         "comments": login_context.client.report_my_comments(),
-    }
+    } if include_reports else {}
     return {
         "login": _login_to_json(login_context),
         "total": int(paged.get("total", 0) or 0),
@@ -1794,11 +1847,11 @@ def command_list_my_apps(payload: dict) -> dict:
     }
 
 
-def command_get_app_workflow(payload: dict) -> dict:
+def command_get_app_workflow(payload: dict, *, login_context=None) -> dict:
     preferred_account = str(payload.get("preferred_account", "")).strip()
     detail_id = str(payload.get("detail_id", "")).strip()
     app_id = str(payload.get("app_id", "")).strip()
-    login_context = try_restore_cached_login(preferred_account)
+    login_context = login_context or try_restore_cached_login(preferred_account)
     if login_context is None:
         raise RuntimeError("未找到可用登录态，请先登录。")
     if not detail_id and not app_id:
@@ -1827,11 +1880,11 @@ def command_get_app_workflow(payload: dict) -> dict:
     }
 
 
-def command_get_app_history_notes(payload: dict) -> dict:
+def command_get_app_history_notes(payload: dict, *, login_context=None) -> dict:
     detail_id = str(payload.get("detail_id", "") or "").strip()
     if not detail_id:
         raise ValueError("请选择一条更新记录。")
-    login_context = try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
+    login_context = login_context or try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
     if login_context is None:
         raise RuntimeError("未找到可用登录态，请先登录。")
     detail = extract_detail_data(login_context.client.get_app_detail(detail_id))
@@ -2065,11 +2118,11 @@ def command_fetch_match_defaults(payload: dict) -> dict:
     return result
 
 
-def command_delete_draft(payload: dict) -> dict:
+def command_delete_draft(payload: dict, *, login_context=None) -> dict:
     detail_id = str(payload.get("detail_id") or "").strip()
     if not detail_id:
         raise ValueError("请选择要删除的草稿。")
-    login_context = try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
+    login_context = login_context or try_restore_cached_login(str(payload.get("preferred_account", "")).strip())
     if login_context is None:
         raise RuntimeError("未找到可用登录态，请先登录。")
     login_context.client.delete_draft(detail_id)
@@ -2163,19 +2216,7 @@ COMMANDS = {
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": "command is required",
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 1
-
-    command = sys.argv[1].strip()
+    command = sys.argv[1].strip() if len(sys.argv) > 1 else "mcp"
     if command == "mcp":
         from appstore.mcp_server import serve_from_preferences
 

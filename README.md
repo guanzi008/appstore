@@ -81,11 +81,15 @@ To update copy, compatibility ranges, or batch applications from a workbook:
 ### UOS AI MCP
 
 - In the desktop app, open Preferences → MCP Settings and enable the service. Save the settings and merge the copied JSON into your MCP client configuration. The client starts the service over stdio. Reconnect after changing the default output directory.
-- Package inspection, capability lookup, and workbook validation are available once the service is enabled. Enable submission and installation for screenshots to use the corresponding tools. Set `APPSTORE_USERNAME` and `APPSTORE_PASSWORD` in the client environment for store login.
+- For clients with a setup form, select `stdio` and use the copied `command`, `args`, and `env` values. Installed builds accept an empty argument list and existing configurations with `mcp` as the argument. The server handles stateless `2026-07-28` tools and handshake revisions from `2024-11-05` through `2025-11-25`.
+- Package inspection, store queries, update previews, asset preparation, and workbook validation are available when the service is enabled. Enable submission, draft operations, and screenshot installation to use those tools. Store queries and previews can reuse a desktop session or use `APPSTORE_USERNAME` and `APPSTORE_PASSWORD` in the client environment.
 - From a source checkout, `scripts/appstore-mcp` starts the server independently and uses the project `.venv` when available. See the [example configuration](appstore/examples/uos-ai-mcp.example.json).
 - Key tools:
   - `inspect_packages` reads `.deb`, `.uab`, and `.layer` packages and distinguishes `loongarch64` from `loong64`.
   - `get_capabilities` lists synced system lines and selectable versions by package family and architecture.
+  - `list_my_apps` lists apps and drafts. `get_app_workflow` reads update history and review status. `get_app_history_notes` reads the original notes for a revision.
+  - `prepare_app_update` previews listing, package, and system changes. `preprocess_assets` prepares icons and screenshots with the desktop rules.
+  - `submit_app_update` submits an update, saves a draft, or sends the original draft for review. `delete_draft` deletes a selected draft.
   - `prepare_new_app_workbook`: build a real submission workbook from actual packages
   - `upload_workbook`: submit a new app or batch update from a workbook
   - `upload_packages` / `auto_upload_packages`: existing-app update only

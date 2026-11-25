@@ -263,15 +263,15 @@ def try_restore_cached_login(
     *,
     session_cache_dir: Path = DEFAULT_SESSION_CACHE_DIR,
     log: Callable[[str], None] | None = None,
+    allow_fallback: bool = True,
 ) -> LoginContext | None:
     store = SessionStateStore(session_cache_dir)
     candidates: list[str] = []
     normalized_preferred = preferred_account.strip()
     if normalized_preferred:
         candidates.append(normalized_preferred)
-    for account in store.list_accounts():
-        if account not in candidates:
-            candidates.append(account)
+    if allow_fallback:
+        candidates.extend(account for account in store.list_accounts() if account != normalized_preferred)
     if not candidates:
         _log(log, "未找到可复用的登录缓存。")
         return None

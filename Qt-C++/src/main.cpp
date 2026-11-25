@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "core/AppPaths.h"
 
 #include <DApplication>
 #include <QDir>
@@ -71,8 +72,7 @@ void configureApplicationFonts(Dtk::Widget::DApplication &app)
 int main(int argc, char *argv[])
 {
     Dtk::Widget::DApplication app(argc, argv);
-    Dtk::Widget::DApplication::setApplicationName(QStringLiteral("应用投递助手"));
-    Dtk::Widget::DApplication::setOrganizationName(QStringLiteral("UnionTech"));
+    AppPaths::setApplicationIdentity();
     app.setProductName(QStringLiteral("应用投递助手"));
     app.setApplicationDescription(QStringLiteral("统信/deepin UOS 应用商店投递与更新工具"));
 

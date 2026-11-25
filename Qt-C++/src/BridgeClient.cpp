@@ -1,4 +1,5 @@
 #include "BridgeClient.h"
+#include "core/AppPaths.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -6,7 +7,6 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
-#include <QStandardPaths>
 #include <QTimer>
 
 BridgeClient::BridgeClient(QString repoRoot, QObject *parent)
@@ -27,7 +27,7 @@ void BridgeClient::configureProcess(QProcess *process, const QString &repoRoot, 
     const bool usePackagedBackend = QFileInfo::exists(packagedBackend);
     if (usePackagedBackend) {
         process->setProgram(packagedBackend);
-        process->setArguments({command});
+        process->setArguments(command == QStringLiteral("mcp") ? QStringList{} : QStringList{command});
     } else {
         const QString pythonProgram = QFileInfo::exists(devVenvPython) ? devVenvPython : QStringLiteral("python3");
         process->setProgram(pythonProgram);
@@ -56,16 +56,7 @@ void BridgeClient::configureProcess(QProcess *process, const QString &repoRoot, 
             QDir::cleanPath(QDir(repoRoot).filePath(QStringLiteral("../../python-runtime")))
         );
     }
-    const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (!dataRoot.isEmpty()) {
-        QDir().mkpath(dataRoot);
-        const QDir dataDir(dataRoot);
-        environment.insert(QStringLiteral("UTPUBLISHER_CAPABILITY_CACHE_DIR"), dataDir.filePath(QStringLiteral("capabilities")));
-        environment.insert(QStringLiteral("UTPUBLISHER_SESSION_CACHE_DIR"), dataDir.filePath(QStringLiteral("session-state")));
-        environment.insert(QStringLiteral("UTPUBLISHER_OUTPUT_ROOT"), dataDir.filePath(QStringLiteral("output")));
-        environment.insert(QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"), dataDir.filePath(QStringLiteral("preferences.json")));
-        environment.insert(QStringLiteral("UTPUBLISHER_WEBENGINE_CACHE_DIR"), dataDir.filePath(QStringLiteral("webengine")));
-    }
+    environment.insert(AppPaths::desktopDataEnvironment());
     process->setProcessEnvironment(environment);
 }
 

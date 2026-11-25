@@ -38,19 +38,30 @@ DEFAULT_JOB_ROOT = Path(os.environ.get("APPSTORE_MCP_JOB_ROOT") or _USER_STATE_R
 DEFAULT_AI_BASE_URL = os.environ.get("APPSTORE_AI_BASE_URL", "http://127.0.0.1:8787/v1")
 DEFAULT_AI_MODEL = os.environ.get("APPSTORE_AI_MODEL", "openai-codex/gpt-5.4")
 DEFAULT_SUDO_PASSWORD = os.environ.get("APPSTORE_SUDO_PASSWORD", "")
-_SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
+_MODERN_PROTOCOL_VERSION = "2026-07-28"
+_LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+_SUPPORTED_PROTOCOL_VERSIONS = (_MODERN_PROTOCOL_VERSION, *_LEGACY_PROTOCOL_VERSIONS)
+_VERSION_META = "io.modelcontextprotocol/protocolVersion"
+_CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
+_SERVER_INFO_META = "io.modelcontextprotocol/serverInfo"
+_SERVER_INFO = {"name": "appstore-mcp", "version": "0.1.0"}
 _SECRET_OPTIONS = {"password", "sudo_password", "ai_api_key"}
 _JOB_SECRETS_ENV = "APPSTORE_MCP_JOB_SECRETS"
 _ACTION_TOOLS = {
     "upload_workbook", "upload_packages", "capture_packages", "start_capture_packages",
-    "auto_upload_packages", "start_auto_upload_packages",
+    "auto_upload_packages", "start_auto_upload_packages", "submit_app_update", "delete_draft",
 }
+_UPDATE_TEXT_FIELDS = (
+    "app_name_zh", "website", "short_desc_zh", "full_desc_zh", "category_id", "developer_name",
+    "note_zh", "app_name_en", "short_desc_en", "full_desc_en", "note_en",
+)
 
 
 class MCPError(RuntimeError):
-    def __init__(self, message: str, *, code: int = -32000) -> None:
+    def __init__(self, message: str, *, code: int = -32000, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.data = data
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,7 @@ class MCPTool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any]], dict[str, Any]]
+    annotations: dict[str, bool] | None = None
 
 
 def _configure_logging() -> None:
@@ -647,6 +659,36 @@ def _resolve_credentials(params: dict[str, Any]) -> tuple[str, str]:
     return username, password
 
 
+def _store_login(params: dict[str, Any]):
+    from appstore.session_state import SessionStateStore
+    from ui.backend import LoginContext, try_restore_cached_login
+    from ui.preferences import PreferenceStore
+
+    account = _ensure_string(params.get("account"), field_name="account")
+    if account and (params.get("username") or params.get("password")):
+        raise MCPError("请选择 account 或账号密码登录方式。", code=-32602)
+    username = _default_username(params.get("username"))
+    password = _default_password(params.get("password"))
+    if not account and (username or password):
+        username, password = _resolve_credentials(params)
+        client = AppStoreClient()
+        dev_info = client.login(username, password)
+        return LoginContext(client, str(dev_info.get("dev_name") or username), None, "credentials", False)
+    if not account:
+        account = PreferenceStore().load().last_session_account.strip()
+    if not account:
+        accounts = SessionStateStore(DEFAULT_SESSION_CACHE_DIR).list_accounts()
+        if len(accounts) == 1:
+            account = accounts[0]
+        elif accounts:
+            raise MCPError("有多个已保存的登录账号，请通过 account 明确选择。")
+    if account:
+        context = try_restore_cached_login(account, session_cache_dir=DEFAULT_SESSION_CACHE_DIR, allow_fallback=False)
+        if context is not None:
+            return context
+    raise MCPError("未找到有效的商店登录态。请在桌面端登录，或设置 APPSTORE_USERNAME 和 APPSTORE_PASSWORD。")
+
+
 def _infer_package_kind(package_path: Path) -> tuple[str, str]:
     suffix = package_path.suffix.lower()
     if suffix == ".deb":
@@ -726,11 +768,11 @@ def _tool_get_capabilities(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_sync_capabilities(params: dict[str, Any]) -> dict[str, Any]:
-    username, password = _resolve_credentials(params)
+    from ui.cpp_bridge import _load_categories
+
     cache_dir = Path(_ensure_string(params.get("cache_dir"), field_name="cache_dir", default=str(DEFAULT_CACHE_DIR))).expanduser().resolve()
-    client = AppStoreClient()
-    client.login(username, password)
-    latest_path = sync_capabilities_to_cache(client, cache_dir)
+    login = _store_login(params)
+    latest_path = sync_capabilities_to_cache(login.client, cache_dir)
     cache = load_capability_cache(cache_dir)
     payload = {
         "cache_dir": str(cache_dir),
@@ -739,8 +781,213 @@ def _tool_sync_capabilities(params: dict[str, Any]) -> dict[str, Any]:
         "deb_system_lines": len(cache.deb_system_lines),
         "linglong_system_lines": len(cache.linglong_system_lines),
         "baseline_groups": len(cache.baseline_options),
+        "categories": _load_categories(login),
     }
     return _result_payload(payload, summary="sync_capabilities completed")
+
+
+def _page_params(params: dict[str, Any]) -> dict[str, int]:
+    pagination = {}
+    for key, default in (("page_num", 1), ("page_size", 20)):
+        value = _ensure_optional_int(params.get(key), field_name=key)
+        if value is not None and value < 1:
+            raise MCPError(f"{key} must be greater than zero", code=-32602)
+        pagination[key] = default if value is None else value
+    return pagination
+
+
+def _required_text(params: dict[str, Any], field: str) -> str:
+    value = _ensure_string(params.get(field), field_name=field)
+    if not value:
+        raise MCPError(f"{field} is required", code=-32602)
+    return value
+
+
+def _tool_list_my_apps(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.cpp_bridge import command_list_my_apps
+
+    pagination = _page_params(params)
+    keyword = _ensure_string(params.get("keyword"), field_name="keyword")
+    reports = _ensure_optional_bool(params.get("include_reports"), field_name="include_reports") is True
+    result = command_list_my_apps({**pagination, "keyword": keyword}, login_context=_store_login(params), include_reports=reports)
+    result.pop("login")
+    return _result_payload({**pagination, **result}, summary=f"查询到 {len(result['rows'])} 条应用记录。")
+
+
+def _tool_get_app_workflow(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.cpp_bridge import command_get_app_workflow
+
+    app_id = _ensure_string(params.get("app_id"), field_name="app_id")
+    detail_id = _ensure_string(params.get("detail_id"), field_name="detail_id")
+    if not app_id and not detail_id:
+        raise MCPError("app_id or detail_id is required", code=-32602)
+    pagination = _page_params(params)
+    result = command_get_app_workflow({**pagination, "app_id": app_id, "detail_id": detail_id}, login_context=_store_login(params))
+    result.pop("login")
+    return _result_payload(result, summary="已读取商店的更新记录和审核状态。")
+
+
+def _tool_get_app_history_notes(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.cpp_bridge import command_get_app_history_notes
+
+    detail_id = _required_text(params, "detail_id")
+    result = command_get_app_history_notes({"detail_id": detail_id}, login_context=_store_login(params))
+    return _result_payload({"detail_id": detail_id, **result}, summary=f"已读取这条记录的 {len(result['notes'])} 条更新说明。")
+
+
+def _optional_path(params: dict[str, Any], field: str) -> Path | None:
+    value = _ensure_string(params.get(field), field_name=field)
+    return Path(value).expanduser().resolve() if value else None
+
+
+def _path_list(params: dict[str, Any], field: str, *, required: bool = False) -> tuple[Path, ...]:
+    return tuple(dict.fromkeys(
+        Path(value).expanduser().resolve()
+        for value in _ensure_string_list(params.get(field), field_name=field, required=required)
+    ))
+
+
+def _new_output_directory(params: dict[str, Any], *, prefix: str) -> Path:
+    parent = _optional_path(params, "output_dir") or _default_output_dir(prefix).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"{prefix}-", dir=parent))
+
+
+def _tool_preprocess_assets(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.backend import preprocess_submission_assets
+    from ui.package_meta import analyze_package_group
+
+    package_group = analyze_package_group(list(_path_list(params, "packages", required=True)))
+    screenshots = _path_list(params, "screenshot_paths") if "screenshot_paths" in params else None
+    output_dir = _new_output_directory(params, prefix="preprocess-assets")
+    bundle = preprocess_submission_assets(
+        package_group, asset_dir=_optional_path(params, "asset_dir"),
+        manual_icon_path=_optional_path(params, "icon_path"), manual_screenshot_paths=screenshots, output_dir=output_dir,
+    )
+    return _result_payload({
+        "output_dir": str(output_dir),
+        "icon_path": str(bundle.icon_path) if bundle.icon_path else "",
+        "screenshot_paths": [str(path) for path in bundle.screenshot_paths],
+        "warnings": list(bundle.warnings),
+        "ready_for_upload": bundle.icon_path is not None and len(bundle.screenshot_paths) >= 3,
+    }, summary="已按桌面规则预处理并校验素材。")
+
+
+def _apply_update_targets(group: dict, edits: Any) -> None:
+    if not isinstance(edits, list) or any(not isinstance(edit, dict) for edit in edits):
+        raise MCPError("targets must be an array of objects", code=-32602)
+    rows = {(row["package_path"], row["code"]): row for row in group["targets"]}
+    for edit in edits:
+        _reject_unknown_fields(edit, allowed_fields={"package_path", "system_line_code", "selected", "baseline_ids", "excluded_baseline_ids"}, tool_name="targets")
+        path = _required_text(edit, "package_path")
+        code = _required_text(edit, "system_line_code")
+        row = rows.get((path, code))
+        if row is None:
+            raise MCPError(f"指定安装包没有系统线 {code}，请使用预览返回的路径和系统线。", code=-32602)
+        selected = _ensure_optional_bool(edit.get("selected"), field_name="selected")
+        if selected is None:
+            raise MCPError("selected is required", code=-32602)
+        row["selected"] = selected
+        for argument, field in (("baseline_ids", "selected_baseline_ids"), ("excluded_baseline_ids", "unsupported_baseline_ids")):
+            if not selected:
+                row[field] = []
+            elif argument in edit:
+                values = _ensure_string_list(edit[argument], field_name=argument)
+                unknown = set(values) - {item["id"] for item in row["baseline_options"]}
+                if unknown:
+                    raise MCPError(f"系统线 {code} 没有这些版本 ID：{', '.join(sorted(unknown))}。", code=-32602)
+                row[field] = values
+        row["baseline_id"] = next(iter(row["selected_baseline_ids"]), "")
+
+
+def _prepare_app_update(params: dict[str, Any], *, detail_id: str, client, cache) -> tuple[dict, str]:
+    from ui.backend import REGION_OPTIONS
+    from ui.cpp_bridge import build_revision_update_group
+
+    group, status = build_revision_update_group(
+        client, detail_id, capability_cache=cache, package_paths=_path_list(params, "packages"),
+        removed_package_ids=tuple(dict.fromkeys(_ensure_string_list(params.get("remove_package_ids"), field_name="remove_package_ids"))),
+        asset_dir=_optional_path(params, "asset_dir"),
+    )
+    metadata = params.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise MCPError("metadata must be an object", code=-32602)
+    _reject_unknown_fields(metadata, allowed_fields={*_UPDATE_TEXT_FIELDS, "region_codes"}, tool_name="metadata")
+    for key in metadata.keys() - {"region_codes"}:
+        group[key] = _ensure_string(metadata[key], field_name=key)
+    if "region_codes" in metadata:
+        codes = _ensure_string_list(metadata["region_codes"], field_name="region_codes", required=True)
+        if set(codes) - {code for code, _ in REGION_OPTIONS}:
+            raise MCPError("region_codes includes an unsupported region", code=-32602)
+        group["region_codes"] = codes
+    if metadata.keys() & {"app_name_en", "short_desc_en", "full_desc_en", "note_en"}:
+        group["manual_en_edited"] = True
+    if "targets" in params:
+        _apply_update_targets(group, params["targets"])
+    for key in ("cpu_clip_codes", "motherboard_codes"):
+        if key in params:
+            group[key] = _ensure_string_list(params[key], field_name=key)
+    if "icon_path" in params or "screenshot_paths" in params:
+        icon = _optional_path(params, "icon_path")
+        screenshots = _path_list(params, "screenshot_paths")
+        if icon is None or len(screenshots) < 3:
+            raise MCPError("替换商店素材需要图标和至少三张截图。", code=-32602)
+        group.update(icon_path=str(icon), screenshot_paths=[str(path) for path in screenshots], replace_assets=True)
+    return group, status
+
+
+def _tool_prepare_app_update(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.backend import load_or_sync_capabilities
+
+    detail_id = _required_text(params, "detail_id")
+    client = _store_login(params).client
+    cache = load_or_sync_capabilities(client, cache_dir=DEFAULT_CACHE_DIR)
+    group, status = _prepare_app_update(params, detail_id=detail_id, client=client, cache=cache)
+    selected_package_paths = {target["package_path"] for target in group["targets"] if target["selected"]}
+    return _result_payload({
+        "detail_id": detail_id, "app_id": group["selected_match_app_id"], "status": status,
+        "draft_detail_id": group["draft_detail_id"], "pkg_name": group["pkg_name"],
+        "metadata": {key: group[key] for key in (*_UPDATE_TEXT_FIELDS, "region_codes")},
+        "packages": group["packages"], "targets": group["targets"],
+        "packages_without_targets": [package["path"] for package in group["packages"] if package["path"] not in selected_package_paths],
+        "removed_package_ids": group.get("removed_draft_package_ids", []),
+        "cpu_clip_options": group["cpu_clip_options"], "motherboard_options": group["motherboard_options"],
+        "icon_path": group["icon_path"], "screenshot_paths": group["screenshot_paths"],
+        "replace_assets": group["replace_assets"], "asset_warnings": group["asset_warnings"],
+    }, summary="已根据商店版本生成更新预览。")
+
+
+def _tool_submit_app_update(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.backend import load_or_sync_capabilities, submit_applications_batch
+    from ui.cpp_bridge import _group_payload_to_plan, _submission_result_to_json
+
+    detail_id = _required_text(params, "detail_id")
+    operation = _required_text(params, "operation")
+    if operation not in {"submit_update", "save_draft", "submit_draft"}:
+        raise MCPError("unsupported operation", code=-32602)
+    login = _store_login(params)
+    cache = load_or_sync_capabilities(login.client, cache_dir=DEFAULT_CACHE_DIR)
+    group, _ = _prepare_app_update(params, detail_id=detail_id, client=login.client, cache=cache)
+    if bool(group["draft_detail_id"]) != (operation != "submit_update"):
+        raise MCPError("选中的版本状态与操作不匹配，请刷新版本再选择更新或草稿操作。")
+    plan, targets = _group_payload_to_plan(group, save_draft=operation == "save_draft")
+    submission = submit_applications_batch(
+        login, plans=(plan,), cache=cache, note="", release_key="stable", pkg_channel="stable",
+        selected_targets=targets, output_dir=_new_output_directory(params, prefix="app-update"),
+    )
+    report = _submission_result_to_json(submission)
+    return _result_payload({
+        "detail_id": detail_id, "operation": operation, "exit_code": int(bool(report["failure_count"])),
+        "report": report["rows"], **{key: value for key, value in report.items() if key != "rows"},
+    }, summary="save_draft completed" if operation == "save_draft" else "submit_app_update completed")
+
+
+def _tool_delete_draft(params: dict[str, Any]) -> dict[str, Any]:
+    from ui.cpp_bridge import command_delete_draft
+
+    detail_id = _required_text(params, "detail_id")
+    result = command_delete_draft({"detail_id": detail_id}, login_context=_store_login(params))
+    return _result_payload(result, summary="已删除选中的草稿。")
 
 
 def _tool_generate_template(params: dict[str, Any]) -> dict[str, Any]:
@@ -1254,6 +1501,48 @@ def _tool_get_job_status(params: dict[str, Any]) -> dict[str, Any]:
     return _result_payload(payload, summary="get_job_status completed")
 
 
+_ACCOUNT_FIELD = {"type": "string", "description": "保存的商店登录账号。默认使用桌面选定账号或客户端环境里的账号凭据。"}
+_PAGINATION_FIELDS = {
+    "page_num": {"type": "integer", "minimum": 1, "default": 1},
+    "page_size": {"type": "integer", "minimum": 1, "default": 20},
+}
+_STRING_ARRAY = {"type": "array", "items": {"type": "string"}}
+_ASSET_FIELDS = {
+    "asset_dir": {"type": "string", "description": "图标和截图素材的目录。"},
+    "icon_path": {"type": "string", "description": "图标绝对路径。"},
+    "screenshot_paths": {**_STRING_ARRAY, "description": "截图绝对路径，按展示顺序传入。"},
+}
+_UPDATE_FIELDS = {
+    "account": _ACCOUNT_FIELD,
+    "detail_id": {"type": "string", "description": "我的应用或更新记录返回的目标版本记录 ID。"},
+    "packages": {**_STRING_ARRAY, "description": "要导入的本地包绝对路径。同架构包按桌面逻辑替换。"},
+    "remove_package_ids": {**_STRING_ARRAY, "description": "草稿中要移除的包记录 ID，取自预览的 origin_id。"},
+    "metadata": {
+        "type": "object",
+        "description": "修改的应用资料。note_zh 和 note_en 是本次更新说明。",
+        "properties": {**{name: {"type": "string"} for name in _UPDATE_TEXT_FIELDS}, "region_codes": _STRING_ARRAY},
+        "additionalProperties": False,
+    },
+    "targets": {
+        "type": "array",
+        "description": "逐包修改适配范围，使用预览返回的 package_path 和系统线 code。",
+        "items": {
+            "type": "object",
+            "properties": {
+                "package_path": {"type": "string"}, "system_line_code": {"type": "string"},
+                "selected": {"type": "boolean"}, "baseline_ids": _STRING_ARRAY, "excluded_baseline_ids": _STRING_ARRAY,
+            },
+            "required": ["package_path", "system_line_code", "selected"],
+            "additionalProperties": False,
+        },
+    },
+    "cpu_clip_codes": _STRING_ARRAY,
+    "motherboard_codes": _STRING_ARRAY,
+    **_ASSET_FIELDS,
+}
+_READ_ONLY_TOOL = {"readOnlyHint": True, "destructiveHint": False}
+
+
 TOOLS: dict[str, MCPTool] = {
     "inspect_packages": MCPTool(
         name="inspect_packages",
@@ -1270,6 +1559,7 @@ TOOLS: dict[str, MCPTool] = {
             "required": ["packages"],
         },
         handler=_tool_inspect_packages,
+        annotations=_READ_ONLY_TOOL,
     ),
     "get_capabilities": MCPTool(
         name="get_capabilities",
@@ -1284,19 +1574,89 @@ TOOLS: dict[str, MCPTool] = {
             "additionalProperties": False,
         },
         handler=_tool_get_capabilities,
+        annotations=_READ_ONLY_TOOL,
     ),
     "sync_capabilities": MCPTool(
         name="sync_capabilities",
-        description="登录应用商店并同步系统线、baseline 能力缓存。新应用 workbook 生成或真实上传前应先调用一次。",
+        description="同步商店系统线、兼容版本和应用分类。可使用桌面登录态或客户端账号凭据。",
         input_schema={
             "type": "object",
             "properties": {
                 "username": {"type": "string", "description": "应用商店用户名。可省略并改用 APPSTORE_USERNAME。"},
                 "password": {"type": "string", "description": "应用商店密码。可省略并改用 APPSTORE_PASSWORD。"},
+                "account": _ACCOUNT_FIELD,
                 "cache_dir": {"type": "string", "description": "能力缓存目录。默认使用当前 MCP 服务的缓存目录。"},
             },
         },
         handler=_tool_sync_capabilities,
+    ),
+    "list_my_apps": MCPTool(
+        name="list_my_apps",
+        description="按页查询当前商店账号的应用与草稿。支持按应用名或商店 ID 搜索，返回 app_id、detail_id 和草稿状态。",
+        input_schema={"type": "object", "properties": {
+            "account": _ACCOUNT_FIELD, **_PAGINATION_FIELDS,
+            "keyword": {"type": "string"},
+            "include_reports": {"type": "boolean", "description": "同时查询应用数、下载量和评论统计。"},
+        }, "additionalProperties": False},
+        handler=_tool_list_my_apps,
+        annotations=_READ_ONLY_TOOL,
+    ),
+    "get_app_workflow": MCPTool(
+        name="get_app_workflow",
+        description="用 app_id 分页读取真实更新记录，用 detail_id 查看该版本的审核步骤。至少提供一个 ID。",
+        input_schema={"type": "object", "properties": {
+            "account": _ACCOUNT_FIELD, **_PAGINATION_FIELDS,
+            "app_id": {"type": "string"}, "detail_id": {"type": "string"},
+        }, "additionalProperties": False},
+        handler=_tool_get_app_workflow,
+        annotations=_READ_ONLY_TOOL,
+    ),
+    "get_app_history_notes": MCPTool(
+        name="get_app_history_notes",
+        description="按更新记录的 detail_id 读取商店保存的原始更新说明，包含语言、通用说明和各包对应的说明。",
+        input_schema={"type": "object", "properties": {
+            "account": _ACCOUNT_FIELD, "detail_id": {"type": "string"},
+        }, "required": ["detail_id"], "additionalProperties": False},
+        handler=_tool_get_app_history_notes,
+        annotations=_READ_ONLY_TOOL,
+    ),
+    "prepare_app_update": MCPTool(
+        name="prepare_app_update",
+        description="读取指定商店版本的资料、安装包和逐包适配范围，可预览导入替换包、草稿移包、编辑资料或系统线。",
+        input_schema={"type": "object", "properties": _UPDATE_FIELDS, "required": ["detail_id"], "additionalProperties": False},
+        handler=_tool_prepare_app_update,
+        annotations={"destructiveHint": False},
+    ),
+    "preprocess_assets": MCPTool(
+        name="preprocess_assets",
+        description="使用桌面素材规则处理并校验图标与截图，生成可投递的文件并列出问题。",
+        input_schema={"type": "object", "properties": {
+            "packages": _STRING_ARRAY, **_ASSET_FIELDS,
+            "output_dir": {"type": "string", "description": "结果存放的父目录，处理后的文件写入新建子目录。"},
+        }, "required": ["packages"], "additionalProperties": False},
+        handler=_tool_preprocess_assets,
+        annotations={"destructiveHint": False},
+    ),
+    "submit_app_update": MCPTool(
+        name="submit_app_update",
+        description="按选定商店版本实际更新应用。可只改资料或系统线，也可替换包、保存草稿或将原草稿送审。先用 prepare_app_update 查看计划。",
+        input_schema={"type": "object", "properties": {
+            **_UPDATE_FIELDS,
+            "operation": {"type": "string", "enum": ["submit_update", "save_draft", "submit_draft"],
+                          "description": "分别对应提交已有应用更新、保存原草稿和把原草稿送审。"},
+            "output_dir": {"type": "string", "description": "报告存放的父目录。"},
+        }, "required": ["detail_id", "operation"], "additionalProperties": False},
+        handler=_tool_submit_app_update,
+        annotations={"readOnlyHint": False, "destructiveHint": True},
+    ),
+    "delete_draft": MCPTool(
+        name="delete_draft",
+        description="删除指定草稿记录。商店状态校验通过后执行删除，使用 list_my_apps 返回的草稿 detail_id。",
+        input_schema={"type": "object", "properties": {
+            "account": _ACCOUNT_FIELD, "detail_id": {"type": "string"},
+        }, "required": ["detail_id"], "additionalProperties": False},
+        handler=_tool_delete_draft,
+        annotations={"readOnlyHint": False, "destructiveHint": True},
     ),
     "generate_example_template": MCPTool(
         name="generate_example_template",
@@ -1618,46 +1978,27 @@ TOOLS: dict[str, MCPTool] = {
             "required": ["job_id"],
         },
         handler=_tool_get_job_status,
+        annotations=_READ_ONLY_TOOL,
     ),
 }
 
 
-def _handle_initialize(request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
-    protocol_version = _ensure_string(params.get("protocolVersion"), field_name="protocolVersion")
-    if protocol_version not in _SUPPORTED_PROTOCOL_VERSIONS:
-        protocol_version = _SUPPORTED_PROTOCOL_VERSIONS[0]
-    return {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "protocolVersion": protocol_version,
-            "capabilities": {"tools": {}},
-            "serverInfo": {
-                "name": "appstore-mcp",
-                "version": "0.1.0",
-            },
-        },
-    }
+def _handle_tools_list(available_tools: dict[str, MCPTool], protocol_version: str) -> dict[str, Any]:
+    tools = []
+    for tool in available_tools.values():
+        entry = {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+        if tool.annotations is not None and protocol_version >= "2025-03-26":
+            entry["annotations"] = tool.annotations
+        tools.append(entry)
+    return {"tools": tools}
 
 
-def _handle_tools_list(request_id: Any, available_tools: dict[str, MCPTool]) -> dict[str, Any]:
-    tools = [
-        {
-            "name": tool.name,
-            "description": tool.description,
-            "inputSchema": tool.input_schema,
-        }
-        for tool in available_tools.values()
-    ]
-    return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
-
-
-def _handle_tools_call(request_id: Any, params: dict[str, Any], available_tools: dict[str, MCPTool]) -> dict[str, Any]:
+def _handle_tools_call(params: dict[str, Any], available_tools: dict[str, MCPTool], protocol_version: str) -> dict[str, Any]:
     tool_name = _ensure_string(params.get("name"), field_name="name")
     if not tool_name:
         raise MCPError("tools/call requires name", code=-32602)
     if tool_name in TOOLS and tool_name not in available_tools:
-        raise MCPError("请在偏好设置的 MCP 设置中允许投递与自动截图。")
+        raise MCPError("请在偏好设置的 MCP 设置中允许投递、草稿操作和安装截图。")
     tool = available_tools.get(tool_name)
     if tool is None:
         raise MCPError(f"unknown tool: {tool_name}", code=-32601)
@@ -1666,63 +2007,125 @@ def _handle_tools_call(request_id: Any, params: dict[str, Any], available_tools:
         arguments = {}
     if not isinstance(arguments, dict):
         raise MCPError("tools/call arguments must be an object", code=-32602)
-    return {"jsonrpc": "2.0", "id": request_id, "result": tool.handler(arguments)}
+    if tool.input_schema.get("additionalProperties") is False:
+        _reject_unknown_fields(arguments, allowed_fields=set(tool.input_schema["properties"]), tool_name=tool_name)
+    result = tool.handler(arguments)
+    if "structuredContent" in result:
+        structured = result["structuredContent"]
+        as_text = {"type": "text", "text": _json_text(structured)}
+        if protocol_version < "2025-06-18":
+            result.pop("structuredContent")
+            result["content"] = [as_text]
+        elif as_text not in result["content"]:
+            result["content"].append(as_text)
+    return result
 
 
 def _success_response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
-def _error_response(request_id: Any, *, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+def _error_response(request_id: Any, error: MCPError) -> dict[str, Any]:
+    detail: dict[str, Any] = {"code": error.code, "message": str(error)}
+    if error.data is not None:
+        detail["data"] = error.data
+    return {"jsonrpc": "2.0", "id": request_id, "error": detail}
 
 
-def _dispatch(message: dict[str, Any], *, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> dict[str, Any] | None:
-    method = message.get("method")
-    request_id = message.get("id")
-    params = message.get("params")
-    if params is None:
-        params = {}
-    if not isinstance(params, dict):
-        raise MCPError("params must be an object", code=-32602)
+class _Protocol:
+    def __init__(self, get_tools: Callable[[], dict[str, MCPTool]]) -> None:
+        self.get_tools = get_tools
+        self.legacy_version = _LEGACY_PROTOCOL_VERSIONS[0]
 
-    if request_id is None:
-        if method == "notifications/initialized":
+    def handle_frame(self, frame: bytes) -> dict[str, Any] | list[dict[str, Any]] | None:
+        payload = _decode_message(frame)
+        if isinstance(payload, list):
+            if self.legacy_version >= "2025-06-18" or not payload:
+                raise MCPError("JSON-RPC batch is invalid for this MCP version", code=-32600)
+            return [response for request in payload if (response := self.respond(request)) is not None] or None
+        return self.respond(payload)
+
+    def respond(self, message: Any) -> dict[str, Any] | None:
+        if not isinstance(message, dict):
+            return _error_response(None, MCPError("JSON-RPC request must be an object", code=-32600))
+        request_id = message.get("id")
+        if type(request_id) not in (int, str):
+            request_id = None
+        try:
+            return self.dispatch(message)
+        except MCPError as exc:
+            return _error_response(request_id, exc)
+        except Exception as exc:
+            LOGGER.exception("Unhandled appstore MCP error")
+            return _error_response(request_id, MCPError(str(exc), code=-32603))
+
+    def dispatch(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        method = message.get("method")
+        request_id = message.get("id")
+        if message.get("jsonrpc") != "2.0" or not isinstance(method, str) or not method:
+            raise MCPError("invalid JSON-RPC request", code=-32600)
+        if "id" not in message:
             return None
-        if method == "notifications/cancelled":
-            return None
-        return None
+        if type(request_id) not in (int, str):
+            raise MCPError("request id must be an integer or string", code=-32600)
 
-    if method == "initialize":
-        if get_tools is not None:
-            get_tools()
-        return _handle_initialize(request_id, params)
-    if method == "ping":
-        return _success_response(request_id, {})
-    if method == "tools/list":
-        return _handle_tools_list(request_id, get_tools() if get_tools is not None else TOOLS)
-    if method == "tools/call":
-        return _handle_tools_call(request_id, params, get_tools() if get_tools is not None else TOOLS)
-    raise MCPError(f"unsupported method: {method}", code=-32601)
+        params = message.get("params")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise MCPError("params must be an object", code=-32602)
+        meta = params.get("_meta", {})
+        if not isinstance(meta, dict):
+            raise MCPError("params._meta must be an object", code=-32602)
+        if method == "server/discover" or _VERSION_META in meta:
+            requested = meta.get(_VERSION_META)
+            if not isinstance(requested, str) or not isinstance(meta.get(_CLIENT_CAPABILITIES_META), dict):
+                raise MCPError("modern MCP requests require protocolVersion and clientCapabilities in params._meta", code=-32602)
+            if requested != _MODERN_PROTOCOL_VERSION:
+                raise MCPError("Unsupported protocol version", code=-32022, data={
+                    "supported": list(_SUPPORTED_PROTOCOL_VERSIONS), "requested": requested,
+                })
+            result = self.handle_modern(method, params)
+            if method in {"server/discover", "tools/list"}:
+                result.update(ttlMs=0, cacheScope="private")
+            return _success_response(request_id, {
+                "resultType": "complete", "_meta": {_SERVER_INFO_META: _SERVER_INFO}, **result,
+            })
+
+        if method == "initialize":
+            self.get_tools()
+            requested = _ensure_string(params.get("protocolVersion"), field_name="protocolVersion")
+            self.legacy_version = requested if requested in _LEGACY_PROTOCOL_VERSIONS else _LEGACY_PROTOCOL_VERSIONS[0]
+            result = {"protocolVersion": self.legacy_version, "capabilities": {"tools": {}}, "serverInfo": _SERVER_INFO}
+        elif method == "ping":
+            result = {}
+        else:
+            result = self.handle_tools(method, params, self.legacy_version)
+        return _success_response(request_id, result)
+
+    def handle_modern(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "server/discover":
+            self.get_tools()
+            return {"supportedVersions": list(_SUPPORTED_PROTOCOL_VERSIONS), "capabilities": {"tools": {}}}
+        return self.handle_tools(method, params, _MODERN_PROTOCOL_VERSION)
+
+    def handle_tools(self, method: str, params: dict[str, Any], protocol_version: str) -> dict[str, Any]:
+        if method == "tools/list":
+            return _handle_tools_list(self.get_tools(), protocol_version)
+        if method == "tools/call":
+            return _handle_tools_call(params, self.get_tools(), protocol_version)
+        raise MCPError(f"unsupported method: {method}", code=-32601)
 
 
-def _decode_message(raw: bytes) -> dict[str, Any]:
+def _decode_message(raw: bytes) -> Any:
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MCPError("invalid JSON-RPC payload", code=-32700) from exc
-    if not isinstance(payload, dict):
-        raise MCPError("JSON-RPC payload must be an object", code=-32600)
-    return payload
 
 
-def _extract_message(buffer: bytearray) -> dict[str, Any] | None:
-    while buffer and buffer[0] in b" \t\r\n":
-        del buffer[0]
-    if not buffer:
-        return None
-
-    if buffer.lower().startswith(b"content-length:"):
+def _extract_frame(buffer: bytearray, *, length_prefixed: bool) -> bytes | None:
+    if length_prefixed:
         header_end = buffer.find(b"\r\n\r\n")
         separator_size = 4
         if header_end < 0:
@@ -1749,25 +2152,29 @@ def _extract_message(buffer: bytearray) -> dict[str, Any] | None:
             return None
         body = bytes(buffer[header_end + separator_size : total])
         del buffer[:total]
-        return _decode_message(body)
+        return body
 
     newline_index = buffer.find(b"\n")
     if newline_index < 0:
         return None
-    line = bytes(buffer[:newline_index]).strip()
+    line = bytes(buffer[:newline_index])
     del buffer[: newline_index + 1]
-    if not line:
-        return None
-    return _decode_message(line)
+    return line
 
 
-def _write_message(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+def _write_message(payload: dict[str, Any] | list[dict[str, Any]], *, length_prefixed: bool) -> None:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if length_prefixed:
+        body = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    else:
+        body += b"\n"
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
 
 
 def serve(*, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> int:
     _configure_logging()
+    protocol = _Protocol(get_tools if get_tools is not None else lambda: TOOLS)
     buffer = bytearray()
     stdin = sys.stdin.buffer
     while True:
@@ -1776,23 +2183,19 @@ def serve(*, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> int:
             break
         buffer.extend(chunk)
         while True:
+            while buffer and buffer[0] in b" \t\r\n":
+                del buffer[0]
+            length_prefixed = buffer[:15].lower() == b"content-length:"
             try:
-                message = _extract_message(buffer)
+                frame = _extract_frame(buffer, length_prefixed=length_prefixed)
+                if frame is None:
+                    break
+                with redirect_stdout(sys.stderr):
+                    response = protocol.handle_frame(frame)
             except MCPError as exc:
-                _write_message(_error_response(None, code=exc.code, message=str(exc)))
-                continue
-            if message is None:
-                break
-            request_id = message.get("id")
-            try:
-                response = _dispatch(message, get_tools=get_tools)
-            except MCPError as exc:
-                response = None if request_id is None else _error_response(request_id, code=exc.code, message=str(exc))
-            except Exception as exc:
-                LOGGER.exception("Unhandled appstore MCP error")
-                response = None if request_id is None else _error_response(request_id, code=-32603, message=str(exc))
+                response = _error_response(None, exc)
             if response is not None:
-                _write_message(response)
+                _write_message(response, length_prefixed=length_prefixed)
     return 0
 
 

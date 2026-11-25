@@ -1,5 +1,7 @@
 #include <Python.h>
 
+#include "core/AppPaths.h"
+
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
@@ -78,6 +80,16 @@ int callBridgeMain()
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
+    if (argc < 2 || qstrcmp(argv[1], "mcp") == 0) {
+        AppPaths::setApplicationIdentity();
+        const auto defaults = AppPaths::desktopDataEnvironment();
+        for (const QString &key : defaults.keys()) {
+            const QByteArray name = key.toLatin1();
+            if (qEnvironmentVariableIsEmpty(name.constData())) {
+                qputenv(name.constData(), defaults.value(key).toUtf8());
+            }
+        }
+    }
 
     const QFileInfo executableInfo(QCoreApplication::applicationFilePath());
     const QDir filesDir(executableInfo.dir().absoluteFilePath(QStringLiteral("..")));

@@ -1,3 +1,11 @@
+com.uniontech.utpublisher (0.1.9) unstable; urgency=medium
+
+  * Open preferences beside the sidebar and clarify MCP client setup.
+  * Support direct stdio launch and legacy and stateless MCP protocol revisions.
+  * Expose app history, update previews, asset preparation, and draft operations through MCP.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Wed, 25 Nov 2026 14:55:51 +0800
+
 com.uniontech.utpublisher (0.1.8) unstable; urgency=medium
 
   * Separate system-line defaults from MCP settings in desktop preferences.

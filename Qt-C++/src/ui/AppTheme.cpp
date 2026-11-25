@@ -152,6 +152,26 @@ void apply(QWidget *root)
         QPushButton#SidebarPlain:hover, QPushButton#SidebarPlain:checked {
             background: rgba(255, 255, 255, 24);
         }
+        QLabel#SettingsArrow {
+            color: rgba(246, 250, 255, 170);
+            font-size: 19px;
+        }
+        QMenu#SettingsMenu {
+            background: %19;
+            border: 1px solid %15;
+            border-radius: 10px;
+            min-width: 168px;
+            padding: 5px;
+        }
+        QMenu#SettingsMenu::item {
+            border-radius: 6px;
+            color: %13;
+            font-size: 13px;
+            padding: 8px 12px;
+        }
+        QMenu#SettingsMenu::item:selected {
+            background: %17;
+        }
         QLabel#Avatar {
             background: %10;
             color: %11;

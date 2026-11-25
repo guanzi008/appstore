@@ -1567,7 +1567,7 @@ void MainWindow::openMcpPreferences()
     enabled->setChecked(m_preferences.value(QStringLiteral("mcp_enabled")).toBool());
     layout->addWidget(enabled);
 
-    auto *allowActions = new QCheckBox(QStringLiteral("允许应用投递与安装截图"), &dialog);
+    auto *allowActions = new QCheckBox(QStringLiteral("允许投递、草稿操作和安装截图"), &dialog);
     allowActions->setChecked(m_preferences.value(QStringLiteral("mcp_allow_actions")).toBool());
     allowActions->setEnabled(enabled->isChecked());
     connect(enabled, &QCheckBox::toggled, allowActions, &QCheckBox::setEnabled);
@@ -1595,15 +1595,29 @@ void MainWindow::openMcpPreferences()
     outputRow->addWidget(browse);
     layout->addLayout(outputRow);
 
-    auto *hint = new QLabel(QStringLiteral("保存后将配置合并到 MCP 客户端。客户端连接时会启动服务。"), &dialog);
+    auto *clientSetup = new QFrame(&dialog);
+    clientSetup->setObjectName(QStringLiteral("Card"));
+    auto *clientLayout = new QVBoxLayout(clientSetup);
+    clientLayout->setContentsMargins(12, 10, 12, 10);
+    auto *clientRow = new QHBoxLayout();
+    auto *clientLabel = new QLabel(QStringLiteral("添加到 MCP 客户端"), clientSetup);
+    clientLabel->setObjectName(QStringLiteral("CardTitle"));
+    auto *copyConfig = new QPushButton(QStringLiteral("复制客户端配置"), clientSetup);
+    copyConfig->setAutoDefault(false);
+    clientRow->addWidget(clientLabel, 1);
+    clientRow->addWidget(copyConfig);
+    clientLayout->addLayout(clientRow);
+    auto *hint = new QLabel(QStringLiteral(
+        "勾选「启用 MCP 服务」，复制配置并保存，然后在客户端的 MCP 设置导入 JSON。\n"
+        "表单方式请选择 stdio，并按 JSON 里的 command、args 和 env 填写。"), clientSetup);
     hint->setObjectName(QStringLiteral("MutedText"));
     hint->setWordWrap(true);
-    layout->addWidget(hint);
+    clientLayout->addWidget(hint);
+    layout->addWidget(clientSetup);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
-    auto *copyConfig = buttons->addButton(QStringLiteral("复制客户端配置"), QDialogButtonBox::ActionRole);
     connect(copyConfig, &QPushButton::clicked, &dialog, [&mcpProcess, &processEnv, copyConfig]() {
         QJsonObject environment;
         for (const QString &key : {QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"),

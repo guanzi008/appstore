@@ -13,11 +13,13 @@ from unittest.mock import Mock, patch
 
 from openpyxl import load_workbook
 
+from appstore.appstore_client import AppStoreClient
 from appstore.capabilities import write_capability_cache
 from appstore import mcp_server
-from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine
+from appstore.models import BaselineOption, CapabilityCache, StoreAdaptOption, SystemLine, UploadedFileRef
 from appstore.tests.test_linglong import _write_native_layer, _write_native_uab
 from appstore.upload_batch import _build_direct_packages, _normalize_direct_targets, _select_capture_package_path
+from ui.backend import LoginContext
 from ui.preferences import PreferenceStore, UIPreferences
 
 
@@ -36,7 +38,7 @@ class MCPServerTests(unittest.TestCase):
         argv = [sys.executable, "-m", "appstore.mcp_server"]
         if preferences_path is not None:
             env["UTPUBLISHER_PREFERENCES_PATH"] = str(preferences_path)
-            argv = [sys.executable, "-m", "ui.cpp_bridge", "mcp"]
+            argv = [sys.executable, "-m", "ui.cpp_bridge"]
         return subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -45,11 +47,15 @@ class MCPServerTests(unittest.TestCase):
             env=env,
         )
 
-    def _request(self, process: subprocess.Popen[bytes], payload: dict) -> dict:
+    def _request(self, process: subprocess.Popen[bytes], payload: dict | list, *, length_prefixed: bool = False) -> dict | list:
         assert process.stdin is not None
         assert process.stdout is not None
 
-        process.stdin.write(json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        if length_prefixed:
+            process.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+        else:
+            process.stdin.write(body + b"\n")
         process.stdin.flush()
 
         selector = selectors.DefaultSelector()
@@ -63,9 +69,14 @@ class MCPServerTests(unittest.TestCase):
 
         raw = process.stdout.readline()
         self.assertTrue(raw, "MCP server returned EOF")
+        if length_prefixed:
+            self.assertTrue(raw.startswith(b"Content-Length:"), raw)
+            length = int(raw.partition(b":")[2])
+            self.assertEqual(process.stdout.readline(), b"\r\n")
+            raw = process.stdout.read(length)
         return json.loads(raw.decode("utf-8"))
 
-    def _initialize(self, process: subprocess.Popen[bytes]) -> None:
+    def _initialize(self, process: subprocess.Popen[bytes], *, version: str = "2025-11-25") -> None:
         init_response = self._request(
             process,
             {
@@ -73,13 +84,14 @@ class MCPServerTests(unittest.TestCase):
                 "id": 1,
                 "method": "initialize",
                 "params": {
-                    "protocolVersion": "2025-03-26",
+                    "protocolVersion": version,
                     "capabilities": {},
                     "clientInfo": {"name": "unittest", "version": "1.0"},
                 },
             },
         )
         self.assertEqual(init_response["result"]["serverInfo"]["name"], "appstore-mcp")
+        self.assertEqual(init_response["result"]["protocolVersion"], version)
         assert process.stdin is not None
         process.stdin.write(
             json.dumps(
@@ -124,6 +136,14 @@ class MCPServerTests(unittest.TestCase):
             self.assertIn("generate_example_template", tool_names)
             self.assertIn("upload_packages", tool_names)
             self.assertIn("auto_upload_packages", tool_names)
+            self.assertEqual(len(tool_names), 20)
+            self.assertTrue({
+                "list_my_apps", "get_app_workflow", "get_app_history_notes", "prepare_app_update",
+                "preprocess_assets", "submit_app_update", "delete_draft",
+            }.issubset(tool_names))
+            annotations = {tool["name"]: tool.get("annotations", {}) for tool in tools_response["result"]["tools"]}
+            self.assertTrue(annotations["get_app_history_notes"]["readOnlyHint"])
+            self.assertTrue(annotations["delete_draft"]["destructiveHint"])
 
             inspect_response = self._request(
                 process,
@@ -143,6 +163,81 @@ class MCPServerTests(unittest.TestCase):
             self.assertEqual(payload["package_count"], 1)
             self.assertEqual(payload["packages"][0]["pkg_name"], "labelnova")
             self.assertEqual(payload["packages"][0]["pkg_arch"], "amd64")
+        finally:
+            self._stop_server(process)
+
+    def test_legacy_revision_receives_json_text_tool_results(self) -> None:
+        process = self._start_server()
+        try:
+            self._initialize(process, version="2024-11-05")
+            response = self._request(process, {
+                "jsonrpc": "2.0", "id": "inspect", "method": "tools/call",
+                "params": {"name": "inspect_packages", "arguments": {"packages": [str(self.package_path)]}},
+            })
+            result = response["result"]
+            self.assertEqual(response["id"], "inspect")
+            self.assertNotIn("structuredContent", result)
+            self.assertEqual(json.loads(result["content"][0]["text"])["packages"][0]["pkg_name"], "labelnova")
+        finally:
+            self._stop_server(process)
+
+    def test_length_prefixed_replies_use_utf8_independent_of_stdio_locale(self) -> None:
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "ascii"}):
+            process = self._start_server()
+        try:
+            handshake = self._request(process, {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"},
+            }, length_prefixed=True)
+            self.assertEqual(handshake["result"]["protocolVersion"], "2025-11-25")
+            response = self._request(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, length_prefixed=True)
+            self.assertIn("解析", response["result"]["tools"][0]["description"])
+        finally:
+            self._stop_server(process)
+
+    def test_march_2025_revision_receives_json_rpc_batches(self) -> None:
+        process = self._start_server()
+        try:
+            self._initialize(process, version="2025-03-26")
+            response = self._request(process, [
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+                {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+                {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+            ])
+            self.assertEqual([item["id"] for item in response], [2, 3])
+            self.assertIn("tools", response[1]["result"])
+        finally:
+            self._stop_server(process)
+
+    def test_modern_discovery_and_calls_use_per_request_metadata(self) -> None:
+        process = self._start_server()
+        try:
+            metadata = {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }
+            result = self._request(process, {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"_meta": metadata, "name": "inspect_packages", "arguments": {"packages": [str(self.package_path)]}},
+            })["result"]
+            self.assertEqual(result["resultType"], "complete")
+            self.assertEqual(result["structuredContent"]["package_count"], 1)
+            self.assertEqual(json.loads(result["content"][-1]["text"]), result["structuredContent"])
+
+            discovery = self._request(process, {
+                "jsonrpc": "2.0", "id": 2, "method": "server/discover", "params": {"_meta": metadata},
+            })["result"]
+            self.assertIn("2026-07-28", discovery["supportedVersions"])
+            self.assertEqual(discovery["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "appstore-mcp")
+            tools = self._request(process, {
+                "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"_meta": metadata},
+            })["result"]
+            self.assertEqual((tools["ttlMs"], tools["cacheScope"]), (0, "private"))
+            metadata["io.modelcontextprotocol/protocolVersion"] = "2099-01-01"
+            unsupported = self._request(process, {
+                "jsonrpc": "2.0", "id": 4, "method": "server/discover", "params": {"_meta": metadata},
+            })["error"]
+            self.assertEqual(unsupported["code"], -32022)
+            self.assertIn("2025-11-25", unsupported["data"]["supported"])
         finally:
             self._stop_server(process)
 
@@ -349,7 +444,10 @@ class MCPServerTests(unittest.TestCase):
                 tools_request = {"jsonrpc": "2.0", "id": 3, "method": "tools/list"}
                 available = {tool["name"] for tool in self._request(process, tools_request)["result"]["tools"]}
                 self.assertIn("get_capabilities", available)
+                self.assertIn("prepare_app_update", available)
                 self.assertNotIn("upload_packages", available)
+                self.assertNotIn("submit_app_update", available)
+                self.assertNotIn("delete_draft", available)
 
                 denied = self._request(process, {
                     "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "upload_packages"},
@@ -367,10 +465,151 @@ class MCPServerTests(unittest.TestCase):
                 store.save(UIPreferences(mcp_enabled=True, mcp_allow_actions=True))
                 available = {tool["name"] for tool in self._request(process, tools_request)["result"]["tools"]}
                 self.assertIn("upload_packages", available)
+                self.assertIn("submit_app_update", available)
+                self.assertIn("delete_draft", available)
                 store.save(UIPreferences())
                 self.assertIn("error", self._request(process, tools_request))
             finally:
                 self._stop_server(process)
+
+    def test_store_tools_page_apps_and_load_original_revision_notes(self) -> None:
+        client = Mock()
+        client.list_apps_paged.return_value = {
+            "total": 4, "rows": [{"id": "draft-a", "app_id": "app-a", "app_name": "测试应用", "status": -99}],
+        }
+        client.get_app_history.return_value = {"total": 4, "rows": [
+            {"id": "revision-2", "pkg_version": "1.0,1.0"}, {"id": "revision-1", "pkg_version": "1.0"},
+        ]}
+        client.get_app_detail.return_value = {"app_lan_infos": [{
+            "lan": "zh_CN", "update_desc": "原通用说明", "pkgUptDesc": [
+                {"pkgArchVersion": "loongarch64 1.0,loong64 1.0", "uptDesc": "原按包说明\n"},
+            ],
+        }]}
+        login = LoginContext(client, "fixture", None, "cached", False)
+        with patch("appstore.mcp_server._store_login", return_value=login):
+            apps = mcp_server._tool_list_my_apps({"keyword": "测试", "page_num": 2})["structuredContent"]
+            history = mcp_server._tool_get_app_workflow({"app_id": "app-a", "page_num": 2})["structuredContent"]["history"]
+            notes = mcp_server._tool_get_app_history_notes({"detail_id": "revision-1"})["structuredContent"]["notes"]
+
+        client.list_apps_paged.assert_called_once_with(page_num=2, page_size=20, name_or_app_id="测试")
+        client.report_my_apps.assert_not_called()
+        self.assertTrue(apps["rows"][0]["is_draft"])
+        self.assertEqual([(row["detail_id"], row["pkg_version"]) for row in history["rows"]], [("revision-2", "1.0"), ("revision-1", "1.0")])
+        client.get_app_detail.assert_called_once_with("revision-1")
+        self.assertEqual(notes[0]["packages"], ("loongarch64 1.0", "loong64 1.0"))
+        self.assertEqual([note["text"] for note in notes], ["原按包说明\n", "原通用说明"])
+
+    def test_draft_update_tool_reuses_the_revision_endpoint_and_keeps_both_loong_architectures(self) -> None:
+        cache = CapabilityCache(
+            generated_at="2026-11-25T00:00:00+08:00", deb_system_lines={},
+            linglong_system_lines={"2": SystemLine("2", "专业版 V20", "linglong")},
+            baseline_options={"linglong:2": (BaselineOption("2", "128", "1075"),)},
+        )
+        client = Mock()
+        client.get_app_detail.return_value = {
+            "app_basic_info": {"id": "draft-a", "app_id": "app-a", "status": -99, "category_id": 1, "region": "1"},
+            "app_lan_infos": [{"lan": "zh_CN", "name": "测试应用", "update_desc": "保留通用说明"}],
+            "app_origin_pkgs": [{
+                "id": key, "pkg_name": "org.example.demo", "pkg_version": "1.0.0.0", "pkg_arch": arch,
+                "pkgType": 22, "supSys": "2", "supBlineVer": "128", "file_save_key": key,
+            } for key, arch in (("arm-row", "3"), ("old-loong-row", "5"), ("new-loong-row", "6"))],
+        }
+        client.upload_file_bytes.return_value = UploadedFileRef("temppkg", "replacement-file", 22, "hash")
+        client.update_draft.return_value = {"datas": {"app_id": "app-a"}}
+        login = LoginContext(client, "fixture", None, "cached", False)
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "replacement.uab"
+            _write_native_uab(package, [{"info": {
+                "kind": "app", "id": "org.example.demo", "version": "2.0.0.0", "arch": ["loongarch64"],
+            }}])
+            request = {"detail_id": "draft-a", "packages": [str(package)], "remove_package_ids": ["arm-row"],
+                       "metadata": {"note_zh": "只更新旧世界安装包"}}
+            with (
+                patch("appstore.mcp_server._store_login", return_value=login),
+                patch("ui.backend.load_or_sync_capabilities", return_value=cache),
+                patch("ui.cpp_bridge._extract_initial_icon", return_value=None),
+                patch("ui.cpp_bridge._extract_package_icon", return_value=None),
+            ):
+                preview = mcp_server._tool_prepare_app_update(request)["structuredContent"]
+                client.update_draft.assert_not_called()
+                self.assertEqual({p["arch"] for p in preview["packages"]}, {"loongarch64", "loong64"})
+                self.assertEqual(preview["packages_without_targets"], [])
+                for operation, operate_type in (("save_draft", -99), ("submit_draft", 52)):
+                    result = mcp_server._tool_submit_app_update({**request, "operation": operation, "output_dir": directory})
+                    self.assertFalse(result["isError"], result)
+                    revision, payload = client.update_draft.call_args.args
+                    self.assertEqual((revision, payload["operate_type"]), ("draft-a", operate_type))
+                    detail = payload["app_info"]
+                    files = {row["id"]: row["file_save_key"] for row in detail["app_origin_pkgs"]}
+                    self.assertEqual(files, {"old-loong-row": "replacement-file", "new-loong-row": "new-loong-row"})
+                    zh = next(row for row in detail["app_lan_infos"] if row["lan"] == "zh_CN")
+                    self.assertEqual(zh["update_desc"], "保留通用说明")
+                    self.assertEqual(zh["pkgUptDesc"][0]["uptDesc"], "只更新旧世界安装包")
+        client.submit_payload.assert_not_called()
+
+    def test_published_metadata_and_target_update_reuses_the_online_package(self) -> None:
+        cache = CapabilityCache(
+            generated_at="2026-11-25T00:00:00+08:00", linglong_system_lines={},
+            deb_system_lines={"2": SystemLine("2", "专业版 V20", "deb")},
+            baseline_options={"deb:2": (BaselineOption("2", "114", "1073"), BaselineOption("2", "121", "1074"))},
+        )
+        client = Mock()
+        client.get_app_detail.return_value = {
+            "app_basic_info": {"id": "revision-a", "app_id": "app-a", "status": 101, "category_id": 1, "region": "1"},
+            "app_lan_infos": [{"lan": "zh_CN", "name": "测试应用", "brief_info": "旧简介"}],
+            "app_origin_pkgs": [{
+                "id": "x86-row", "pkg_name": "demo", "pkg_version": "2.0", "pkg_arch": "4",
+                "pkgType": 11, "supSys": "2", "supBlineVer": "114", "file_save_key": "online-file",
+            }],
+        }
+        client.submit_payload.return_value = {"datas": {"app_id": "app-a"}}
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("appstore.mcp_server._store_login", return_value=LoginContext(client, "fixture", None, "cached", False)),
+            patch("ui.backend.load_or_sync_capabilities", return_value=cache),
+        ):
+            preview = mcp_server._tool_prepare_app_update({"detail_id": "revision-a"})["structuredContent"]
+            result = mcp_server._tool_submit_app_update({
+                "detail_id": "revision-a", "operation": "submit_update", "output_dir": directory,
+                "metadata": {"short_desc_zh": "新简介"}, "targets": [{
+                    "package_path": preview["packages"][0]["path"], "system_line_code": "2", "selected": True,
+                    "baseline_ids": ["121"],
+                }],
+            })
+        self.assertFalse(result["isError"], result)
+        payload, = client.submit_payload.call_args.args
+        self.assertEqual(payload["app_id"], "app-a")
+        self.assertEqual(payload["app_info"]["app_lan_infos"][0]["brief_info"], "新简介")
+        package, = payload["app_info"]["app_origin_pkgs"]
+        self.assertEqual(package["file_save_key"], "online-file")
+        self.assertEqual(package["baseline"], [{"system_platform": 2, "id": "121"}])
+        client.upload_file_bytes.assert_not_called()
+        client.update_draft.assert_not_called()
+
+    def test_delete_draft_tool_checks_the_current_revision_state(self) -> None:
+        session = Mock()
+        client = AppStoreClient(session)
+        login = LoginContext(client, "fixture", None, "cached", False)
+        with (
+            patch("appstore.mcp_server._store_login", return_value=login),
+            patch.object(client, "get_app_detail", return_value={"app_basic_info": {"id": "revision-a", "status": 101}}) as detail,
+            patch.object(client, "_ensure_ok", return_value={}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "草稿状态已变化"):
+                mcp_server._tool_delete_draft({"detail_id": "revision-a"})
+            session.delete.assert_not_called()
+            detail.return_value["app_basic_info"]["status"] = -99
+            result = mcp_server._tool_delete_draft({"detail_id": "revision-a"})
+        self.assertEqual(result["structuredContent"]["detail_id"], "revision-a")
+        self.assertTrue(session.delete.call_args.args[0].endswith("/revision-a"))
+
+    def test_store_login_does_not_switch_from_requested_account(self) -> None:
+        with patch("ui.backend.try_restore_cached_login", return_value=None) as restore:
+            with self.assertRaisesRegex(mcp_server.MCPError, "未找到有效的商店登录态"):
+                mcp_server._store_login({"account": "selected-account"})
+        restore.assert_called_once_with(
+            "selected-account", session_cache_dir=mcp_server.DEFAULT_SESSION_CACHE_DIR, allow_fallback=False,
+        )
 
     def test_linglong_loong_architectures_get_distinct_system_lines_and_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -671,7 +671,7 @@ class AppStoreClient:
             raise ValueError("detail_id is required")
         payload = self._ensure_ok(
             self.session.get(
-                f"{BASE}/store-dev-app/app/{normalized_detail_id}/audit_status",
+                f"{BASE}/store-dev-app/app/{quote(normalized_detail_id, safe='')}/audit_status",
                 timeout=REQUEST_TIMEOUT,
             ),
             "get_app_audit_status",

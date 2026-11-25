@@ -205,15 +205,34 @@ void SidebarWidget::buildUi()
     taskCard->hide();
     connect(taskButton, &QPushButton::toggled, taskCard, &QFrame::setVisible);
 
-    auto *settingsButton = new QPushButton(style()->standardIcon(QStyle::SP_FileDialogInfoView), QStringLiteral("偏好设置"), this);
+    auto *settingsButton = new QPushButton(QStringLiteral("偏好设置"), this);
     settingsButton->setObjectName(QStringLiteral("SidebarPlain"));
     settingsButton->setCursor(Qt::PointingHandCursor);
+    settingsButton->setCheckable(true);
+    auto *settingsArrow = new QLabel(QStringLiteral("›"), settingsButton);
+    settingsArrow->setObjectName(QStringLiteral("SettingsArrow"));
+    settingsArrow->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto *arrowLayout = new QHBoxLayout(settingsButton);
+    arrowLayout->setContentsMargins(0, 0, 12, 0);
+    arrowLayout->addStretch();
+    arrowLayout->addWidget(settingsArrow);
+
     auto *settingsMenu = new QMenu(settingsButton);
+    settingsMenu->setObjectName(QStringLiteral("SettingsMenu"));
     auto *systemLineSettings = settingsMenu->addAction(QStringLiteral("系统线与版本"));
     auto *mcpSettings = settingsMenu->addAction(QStringLiteral("MCP 设置"));
     connect(systemLineSettings, &QAction::triggered, this, &SidebarWidget::settingsRequested);
     connect(mcpSettings, &QAction::triggered, this, &SidebarWidget::mcpSettingsRequested);
-    settingsButton->setMenu(settingsMenu);
+    connect(settingsButton, &QPushButton::clicked, settingsMenu, [this, settingsButton, settingsMenu](bool checked) {
+        if (checked) {
+            settingsMenu->popup(mapToGlobal(QPoint(width() + 8, settingsButton->geometry().top())));
+        } else {
+            settingsMenu->hide();
+        }
+    });
+    connect(settingsMenu, &QMenu::aboutToHide, settingsButton, [settingsButton]() {
+        settingsButton->setChecked(false);
+    });
     layout->addWidget(settingsButton);
 
     auto *userCard = new QFrame(this);
