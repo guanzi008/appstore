@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import base64
 import json
 import logging
 import os
@@ -11,6 +13,8 @@ import uuid
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http import HTTPStatus
+from http.client import HTTPMessage
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +22,7 @@ from appstore.appstore_client import AppStoreClient
 from appstore.capabilities import baseline_selectable, load_capability_cache, sync_capabilities_to_cache, system_lines_for_arch
 from appstore.examples.generate_template import generate_template
 from appstore.inspectors import read_package_info
+from appstore.mcp_http import DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_SSE_PORT, serve_network
 from appstore.new_app_workbook import prepare_new_app_workbook
 from appstore.platforms import ARCHITECTURES, normalize_package_arch
 from appstore.upload_batch import main as upload_batch_main
@@ -40,7 +45,7 @@ DEFAULT_AI_MODEL = os.environ.get("APPSTORE_AI_MODEL", "openai-codex/gpt-5.4")
 DEFAULT_SUDO_PASSWORD = os.environ.get("APPSTORE_SUDO_PASSWORD", "")
 _MODERN_PROTOCOL_VERSION = "2026-07-28"
 _LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
-_SUPPORTED_PROTOCOL_VERSIONS = (_MODERN_PROTOCOL_VERSION, *_LEGACY_PROTOCOL_VERSIONS)
+_HTTP_LEGACY_VERSIONS = tuple(version for version in _LEGACY_PROTOCOL_VERSIONS if version >= "2025-03-26")
 _VERSION_META = "io.modelcontextprotocol/protocolVersion"
 _CLIENT_CAPABILITIES_META = "io.modelcontextprotocol/clientCapabilities"
 _SERVER_INFO_META = "io.modelcontextprotocol/serverInfo"
@@ -593,8 +598,8 @@ def _workflow_hint_from_report(report_rows: Any) -> dict[str, Any]:
     ]
     if messages and any("existing app not found" in message for message in messages):
         return {
-            "recommended_tool": "prepare_new_app_workbook",
-            "reason": "current report indicates the package name does not exist in the store yet, so this is a new-app submission instead of an existing-app update",
+            "recommended_tool": "list_my_apps",
+            "reason": "当前账号未匹配到已有应用。先核对账号、包名和商店 ID，确认是新应用后再用 prepare_new_app_workbook。",
         }
     return {}
 
@@ -1056,9 +1061,9 @@ def _tool_prepare_new_app_workbook(params: dict[str, Any]) -> dict[str, Any]:
         "auto_detected_assets": prepared.auto_detected_assets,
         "ready_for_upload": prepared.ready_for_upload,
         "next_actions": [
-            "如缺少 icon_path 或 screenshot_*，先准备素材或调用 capture_packages。",
+            "如缺少图标或截图，先准备素材。需要自动截图时用 start_capture_packages，并用 get_job_status 获取截图。",
             "如缺少 system_line_codes，请用 get_capabilities 查询各架构的系统线。",
-            "完成素材和文案后再调用 upload_workbook。",
+            "完成素材和文案后用 validate_workbook 校验，再用 upload_workbook 提交。",
         ],
     }
     return _result_payload(payload, summary="prepare_new_app_workbook completed")
@@ -1501,12 +1506,17 @@ def _tool_get_job_status(params: dict[str, Any]) -> dict[str, Any]:
     return _result_payload(payload, summary="get_job_status completed")
 
 
-_ACCOUNT_FIELD = {"type": "string", "description": "保存的商店登录账号。默认使用桌面选定账号或客户端环境里的账号凭据。"}
+_ACCOUNT_FIELD = {"type": "string", "description": "保存的商店登录账号。省略时优先使用 MCP 客户端环境的账号凭据，其次使用桌面登录态。"}
 _PAGINATION_FIELDS = {
     "page_num": {"type": "integer", "minimum": 1, "default": 1},
     "page_size": {"type": "integer", "minimum": 1, "default": 20},
 }
 _STRING_ARRAY = {"type": "array", "items": {"type": "string"}}
+_LOCAL_PACKAGES_FIELD = {**_STRING_ARRAY, "description": "本地安装包绝对路径列表。"}
+_CREDENTIAL_FIELDS = {
+    "username": {"type": "string", "description": "商店账号。省略时读取 APPSTORE_USERNAME。"},
+    "password": {"type": "string", "description": "商店密码。省略时读取 APPSTORE_PASSWORD。"},
+}
 _ASSET_FIELDS = {
     "asset_dir": {"type": "string", "description": "图标和截图素材的目录。"},
     "icon_path": {"type": "string", "description": "图标绝对路径。"},
@@ -1514,8 +1524,8 @@ _ASSET_FIELDS = {
 }
 _UPDATE_FIELDS = {
     "account": _ACCOUNT_FIELD,
-    "detail_id": {"type": "string", "description": "我的应用或更新记录返回的目标版本记录 ID。"},
-    "packages": {**_STRING_ARRAY, "description": "要导入的本地包绝对路径。同架构包按桌面逻辑替换。"},
+    "detail_id": {"type": "string", "description": "list_my_apps 或 get_app_workflow 返回的目标版本记录 ID。"},
+    "packages": {**_STRING_ARRAY, "description": "可选的本地安装包绝对路径。按桌面规则替换对应架构，loongarch64 和 loong64 分别匹配。"},
     "remove_package_ids": {**_STRING_ARRAY, "description": "草稿中要移除的包记录 ID，取自预览的 origin_id。"},
     "metadata": {
         "type": "object",
@@ -1539,8 +1549,79 @@ _UPDATE_FIELDS = {
     "cpu_clip_codes": _STRING_ARRAY,
     "motherboard_codes": _STRING_ARRAY,
     **_ASSET_FIELDS,
+    "icon_path": {"type": "string", "description": "替换素材时填写图标绝对路径，并同时提供至少 3 张截图。"},
+    "screenshot_paths": {**_STRING_ARRAY, "description": "替换素材时按展示顺序提供至少 3 张截图的绝对路径，并同时提供图标。"},
 }
 _READ_ONLY_TOOL = {"readOnlyHint": True, "destructiveHint": False}
+
+
+_BATCH_UPLOAD_FIELDS = {
+    **_CREDENTIAL_FIELDS,
+    "capabilities_cache": {"type": "string", "description": "商店能力缓存目录。"},
+    "output_dir": {"type": "string", "description": "投递报告保存目录。"},
+    "mode": {"type": "string", "enum": ["auto", "api", "browser"]},
+    "session_cache_dir": {"type": "string", "description": "浏览器模式的会话缓存目录。"},
+    "artifact_dir": {"type": "string", "description": "浏览器模式的调试输出目录。"},
+    "headless": {"type": "boolean", "enum": [False], "deprecated": True, "description": "旧版配置兼容参数，仅接受 false。"},
+}
+_DIRECT_UPLOAD_FIELDS = {
+    **_BATCH_UPLOAD_FIELDS,
+    "packages": {**_STRING_ARRAY, "description": "同一应用、同一包类型的本地安装包绝对路径。可包含多个架构。"},
+    "app_id": {"type": "string", "description": "可选的商店应用 ID。省略时按包名和包类型匹配。"},
+    "note": {"type": "string", "description": "本次更新说明。"},
+    "release_key": {"type": "string"},
+    "pkg_channel": {"type": "string"},
+    "region": {"type": "string"},
+    "icon_path": _ASSET_FIELDS["icon_path"],
+}
+_CAPTURE_FIELDS = {
+    "packages": _LOCAL_PACKAGES_FIELD,
+    "output_dir": {"type": "string", "description": "截图和报告保存目录。"},
+    "steps": {**_STRING_ARRAY, "description": "省略时用 OCR 和 AI 规划后续点击。click-text:<界面文字> 需要 OCR。"},
+    "ai_prompt": {"type": "string"},
+    "ai_base_url": {"type": "string"},
+    "ai_model": {"type": "string"},
+    "ai_api_key": {"type": "string"},
+    "launch_command": {"type": "string"},
+    "desktop_file": {"type": "string"},
+    "window_name": {"type": "string"},
+    "window_class": {"type": "string"},
+    "install_command": {"type": "string"},
+    "uninstall_command": {"type": "string"},
+    "sudo_password": {"type": "string", "description": "省略时读取 APPSTORE_SUDO_PASSWORD。仍为空时，默认 sudo 安装或卸载命令使用 pkexec。"},
+    "screen_size": {"type": "string"},
+    "scale_filter": {"type": "string"},
+    "capture_tool": {"type": "string", "enum": ["scrot", "ffmpeg"]},
+    "ocr_backend": {"type": "string", "enum": ["auto", "rapidocr", "off"], "description": "自动规划和 click-text 步骤需要启用 OCR。"},
+    "ocr_python": {"type": "string", "description": "OCR Python 解释器路径。可通过 APPSTORE_OCR_PYTHON 配置。"},
+    "ocr_min_score": {"type": "number"},
+    "skip_install": {"type": "boolean", "description": "运行已安装的应用，跳过安装和卸载。"},
+    "keep_installed": {"type": "boolean", "description": "截图结束后保留安装。"},
+    "dbus_session": {"type": "boolean"},
+    "window_timeout": {"type": "number"},
+    "settle_time": {"type": "number"},
+    "validate_screenshots": {"type": "boolean", "description": "自动规划时需要启用截图校验。"},
+    "min_screenshots": {"type": "integer", "description": "最少有效截图数，默认 1。"},
+    "max_screenshots": {"type": "integer", "description": "最多保留的截图数，默认 6，上限 12。"},
+    "min_screenshot_width": {"type": "integer"},
+    "min_screenshot_height": {"type": "integer"},
+    "min_screenshot_bytes": {"type": "integer"},
+    "min_screenshot_stddev": {"type": "number"},
+    "min_screenshot_gray_levels": {"type": "integer"},
+}
+_CAPTURE_SCHEMA = {"type": "object", "properties": _CAPTURE_FIELDS, "required": ["packages"]}
+_AUTO_UPLOAD_SCHEMA = {
+    **_CAPTURE_SCHEMA,
+    "properties": {
+        **_CAPTURE_FIELDS,
+        **_DIRECT_UPLOAD_FIELDS,
+        "output_dir": {"type": "string", "description": "结果目录。截图和投递报告分别写入 capture/ 和 upload/。"},
+        "mode": {"type": "string", "enum": ["auto", "api"], "description": "默认 api。api 和 auto 都通过商店 API 提审。"},
+        "capture_package": {"type": "string", "description": "指定用于截图的包路径或文件名。省略时自动匹配本机架构。"},
+        "min_screenshots": {"type": "integer", "description": "截图阶段要求的最少张数，默认 3。提审需要至少 3 张有效截图。"},
+        "max_screenshots": {"type": "integer", "description": "最多保留的截图数，默认 6，上限 6。"},
+    },
+}
 
 
 TOOLS: dict[str, MCPTool] = {
@@ -1563,7 +1644,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "get_capabilities": MCPTool(
         name="get_capabilities",
-        description="从商店能力缓存查询可选系统线及版本，可按包类型和架构筛选。生成多架构投递表前可用来选择系统线。",
+        description="从商店能力缓存查询系统线 code、各版本的 baseline ID 和是否可选。支持按包类型和架构筛选。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1578,12 +1659,11 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "sync_capabilities": MCPTool(
         name="sync_capabilities",
-        description="同步商店系统线、兼容版本和应用分类。可使用桌面登录态或客户端账号凭据。",
+        description="刷新本地商店系统线和兼容版本缓存，并查询应用分类。可使用桌面登录态或客户端账号凭据。",
         input_schema={
             "type": "object",
             "properties": {
-                "username": {"type": "string", "description": "应用商店用户名。可省略并改用 APPSTORE_USERNAME。"},
-                "password": {"type": "string", "description": "应用商店密码。可省略并改用 APPSTORE_PASSWORD。"},
+                **_CREDENTIAL_FIELDS,
                 "account": _ACCOUNT_FIELD,
                 "cache_dir": {"type": "string", "description": "能力缓存目录。默认使用当前 MCP 服务的缓存目录。"},
             },
@@ -1592,7 +1672,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "list_my_apps": MCPTool(
         name="list_my_apps",
-        description="按页查询当前商店账号的应用与草稿。支持按应用名或商店 ID 搜索，返回 app_id、detail_id 和草稿状态。",
+        description="分页查询当前商店账号的应用与草稿。支持按应用名或商店 ID 搜索，返回 app_id、detail_id 和 is_draft。",
         input_schema={"type": "object", "properties": {
             "account": _ACCOUNT_FIELD, **_PAGINATION_FIELDS,
             "keyword": {"type": "string"},
@@ -1606,7 +1686,8 @@ TOOLS: dict[str, MCPTool] = {
         description="用 app_id 分页读取真实更新记录，用 detail_id 查看该版本的审核步骤。至少提供一个 ID。",
         input_schema={"type": "object", "properties": {
             "account": _ACCOUNT_FIELD, **_PAGINATION_FIELDS,
-            "app_id": {"type": "string"}, "detail_id": {"type": "string"},
+            "app_id": {"type": "string", "description": "商店应用 ID，用于查看历次更新。"},
+            "detail_id": {"type": "string", "description": "版本记录 ID，用于查看该版本的审核步骤。"},
         }, "additionalProperties": False},
         handler=_tool_get_app_workflow,
         annotations=_READ_ONLY_TOOL,
@@ -1622,16 +1703,16 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "prepare_app_update": MCPTool(
         name="prepare_app_update",
-        description="读取指定商店版本的资料、安装包和逐包适配范围，可预览导入替换包、草稿移包、编辑资料或系统线。",
+        description="按 detail_id 预览版本资料、换包、草稿移包、素材替换和逐包适配范围。确认后用 submit_app_update 提交或保存。",
         input_schema={"type": "object", "properties": _UPDATE_FIELDS, "required": ["detail_id"], "additionalProperties": False},
         handler=_tool_prepare_app_update,
         annotations={"destructiveHint": False},
     ),
     "preprocess_assets": MCPTool(
         name="preprocess_assets",
-        description="使用桌面素材规则处理并校验图标与截图，生成可投递的文件并列出问题。",
+        description="按桌面规则处理图标和截图，返回生成的路径及校验问题。图标和至少 3 张有效截图齐全时，ready_for_upload 为 true。",
         input_schema={"type": "object", "properties": {
-            "packages": _STRING_ARRAY, **_ASSET_FIELDS,
+            "packages": _LOCAL_PACKAGES_FIELD, **_ASSET_FIELDS,
             "output_dir": {"type": "string", "description": "结果存放的父目录，处理后的文件写入新建子目录。"},
         }, "required": ["packages"], "additionalProperties": False},
         handler=_tool_preprocess_assets,
@@ -1639,7 +1720,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "submit_app_update": MCPTool(
         name="submit_app_update",
-        description="按选定商店版本实际更新应用。可只改资料或系统线，也可替换包、保存草稿或将原草稿送审。先用 prepare_app_update 查看计划。",
+        description="按 detail_id 更新指定版本。支持换包、只改资料或系统线、保存原草稿和送审原草稿。先用 prepare_app_update 查看计划。",
         input_schema={"type": "object", "properties": {
             **_UPDATE_FIELDS,
             "operation": {"type": "string", "enum": ["submit_update", "save_draft", "submit_draft"],
@@ -1651,7 +1732,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "delete_draft": MCPTool(
         name="delete_draft",
-        description="删除指定草稿记录。商店状态校验通过后执行删除，使用 list_my_apps 返回的草稿 detail_id。",
+        description="使用 list_my_apps 返回的草稿 detail_id 删除商店草稿。删除前会重新检查该版本的状态。",
         input_schema={"type": "object", "properties": {
             "account": _ACCOUNT_FIELD, "detail_id": {"type": "string"},
         }, "required": ["detail_id"], "additionalProperties": False},
@@ -1660,7 +1741,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "generate_example_template": MCPTool(
         name="generate_example_template",
-        description="仅生成 LabelNova 示例 workbook、示例包和占位图片，用于演示或 dry-run。不要直接拿它提交真实应用。",
+        description="生成 LabelNova 演示投递表、示例包和占位图，用于本地试运行。真实新应用用 prepare_new_app_workbook。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1672,7 +1753,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "prepare_new_app_workbook": MCPTool(
         name="prepare_new_app_workbook",
-        description="为真实新应用生成 workbook。会读取你提供的真实包路径，不会写入 LabelNova 示例包；缺少图标、截图或系统线时会显式标记。",
+        description="根据真实安装包生成新应用投递表，并标出缺项和占位文案。补齐后用 validate_workbook 校验，再用 upload_workbook 提交。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1701,7 +1782,7 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "validate_workbook": MCPTool(
         name="validate_workbook",
-        description="校验 workbook 是否足够完整，可以用于批量提审或更新。",
+        description="校验投递表、本地文件和系统线，并生成校验报告。适合在 upload_workbook 前检查。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1716,21 +1797,14 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "upload_workbook": MCPTool(
         name="upload_workbook",
-        description="按 workbook 执行新应用提审或已有应用更新。新应用建议先用 prepare_new_app_workbook 生成真实 workbook。",
+        description="按投递表提交新应用或批量更新。正式提审需要商店账号密码，可通过客户端环境配置。dry_run 可仅校验。",
         input_schema={
             "type": "object",
             "properties": {
                 "workbook": {"type": "string", "description": "workbook 绝对路径。"},
-                "username": {"type": "string"},
-                "password": {"type": "string"},
+                **_BATCH_UPLOAD_FIELDS,
                 "rows": {"type": "string"},
-                "dry_run": {"type": "boolean"},
-                "capabilities_cache": {"type": "string"},
-                "output_dir": {"type": "string"},
-                "mode": {"type": "string", "enum": ["auto", "api", "browser"]},
-                "session_cache_dir": {"type": "string"},
-                "artifact_dir": {"type": "string"},
-                "headless": {"type": "boolean", "enum": [False], "deprecated": True},
+                "dry_run": {"type": "boolean", "description": "仅校验，生成试运行报告。"},
             },
             "required": ["workbook"],
         },
@@ -1738,26 +1812,15 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "upload_packages": MCPTool(
         name="upload_packages",
-        description="仅用于已有应用更新。若返回 existing app not found，说明它不是新应用提审入口，应改用 prepare_new_app_workbook + upload_workbook。",
+        description=(
+            "旧版批量换包入口。按包名或 app_id 匹配已有应用并提交更新，需要商店账号密码。"
+            "替换图标或截图时使用 API 模式。按 detail_id 预览更新或保存原草稿用 prepare_app_update 和 submit_app_update。"
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "username": {"type": "string"},
-                "password": {"type": "string"},
-                "capabilities_cache": {"type": "string"},
-                "output_dir": {"type": "string"},
-                "mode": {"type": "string", "enum": ["auto", "api", "browser"]},
-                "session_cache_dir": {"type": "string"},
-                "artifact_dir": {"type": "string"},
-                "headless": {"type": "boolean", "enum": [False], "deprecated": True},
-                "app_id": {"type": "string"},
-                "note": {"type": "string"},
-                "release_key": {"type": "string"},
-                "pkg_channel": {"type": "string"},
-                "region": {"type": "string"},
-                "screenshot_paths": {"type": "array", "items": {"type": "string"}},
-                "icon_path": {"type": "string"},
+                **_DIRECT_UPLOAD_FIELDS,
+                "screenshot_paths": {**_STRING_ARRAY, "description": "可选的替换截图。提供时按展示顺序传入 3 至 6 张。"},
             },
             "required": ["packages"],
         },
@@ -1765,211 +1828,48 @@ TOOLS: dict[str, MCPTool] = {
     ),
     "capture_packages": MCPTool(
         name="capture_packages",
-        description="无头安装、启动、操作应用并自动截图。它只负责产出截图和报告，不会直接提交新应用。适合短时同步调试；真实 GUI 截图任务通常超过 180 秒，建议优先改用 start_capture_packages 异步启动后再用 get_job_status 轮询。若未显式提供 steps，当前实现会先截首屏，再把整张界面的 OCR 文本块和坐标交给 AI 逐轮决定下一步点击，每拍完一张都会重新识别当前界面后再继续，不依赖写死页面标签。显式 steps 仍可使用 click-text:<界面文字> 触发 OCR 点击。自动规划模式下不要关闭 OCR 或截图校验。若 env 里配置 APPSTORE_SUDO_PASSWORD 则安装/卸载走 sudo -S，否则默认 sudo 命令会改走 pkexec。",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "output_dir": {"type": "string"},
-                "steps": {"type": "array", "items": {"type": "string"}},
-                "ai_prompt": {"type": "string"},
-                "ai_base_url": {"type": "string"},
-                "ai_model": {"type": "string"},
-                "ai_api_key": {"type": "string"},
-                "launch_command": {"type": "string"},
-                "desktop_file": {"type": "string"},
-                "window_name": {"type": "string"},
-                "window_class": {"type": "string"},
-                "install_command": {"type": "string"},
-                "uninstall_command": {"type": "string"},
-                "sudo_password": {"type": "string", "description": "可选 sudo 密码。不传则读取 APPSTORE_SUDO_PASSWORD；若仍为空，默认 sudo 安装/卸载命令会改走 pkexec。"},
-                "screen_size": {"type": "string"},
-                "scale_filter": {"type": "string"},
-                "capture_tool": {"type": "string", "enum": ["scrot", "ffmpeg"]},
-                "ocr_backend": {"type": "string", "enum": ["auto", "rapidocr", "off"]},
-                "ocr_python": {"type": "string", "description": "OCR Python 解释器路径，通常指向 .venv-ocr/bin/python3。"},
-                "ocr_min_score": {"type": "number"},
-                "skip_install": {"type": "boolean"},
-                "keep_installed": {"type": "boolean"},
-                "dbus_session": {"type": "boolean"},
-                "window_timeout": {"type": "number"},
-                "settle_time": {"type": "number"},
-                "validate_screenshots": {"type": "boolean"},
-                "min_screenshots": {"type": "integer", "description": "期望至少生成多少张有效截图。默认 1。"},
-                "max_screenshots": {"type": "integer", "description": "最多保留多少张有效截图。默认 6。"},
-                "min_screenshot_width": {"type": "integer"},
-                "min_screenshot_height": {"type": "integer"},
-                "min_screenshot_bytes": {"type": "integer"},
-                "min_screenshot_stddev": {"type": "number"},
-                "min_screenshot_gray_levels": {"type": "integer"},
-            },
-            "required": ["packages"],
-        },
+        description=(
+            "同步在虚拟显示器中运行应用并生成截图和报告。默认会在本机安装应用。"
+            "长时间截图任务用 start_capture_packages 和 get_job_status。"
+        ),
+        input_schema=_CAPTURE_SCHEMA,
         handler=_tool_capture_packages,
     ),
     "start_capture_packages": MCPTool(
         name="start_capture_packages",
-        description="异步启动长时间截图任务。适合真实 GUI 安装、OCR、AI 分析、多轮点击和多张截图；会立刻返回 job_id，之后用 get_job_status 查看进度和最终结果，避免 180 秒超时。",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "output_dir": {"type": "string"},
-                "steps": {"type": "array", "items": {"type": "string"}},
-                "ai_prompt": {"type": "string"},
-                "ai_base_url": {"type": "string"},
-                "ai_model": {"type": "string"},
-                "ai_api_key": {"type": "string"},
-                "launch_command": {"type": "string"},
-                "desktop_file": {"type": "string"},
-                "window_name": {"type": "string"},
-                "window_class": {"type": "string"},
-                "install_command": {"type": "string"},
-                "uninstall_command": {"type": "string"},
-                "sudo_password": {"type": "string", "description": "可选 sudo 密码。不传则读取 APPSTORE_SUDO_PASSWORD；若仍为空，默认 sudo 安装/卸载命令会改走 pkexec。"},
-                "screen_size": {"type": "string"},
-                "scale_filter": {"type": "string"},
-                "capture_tool": {"type": "string", "enum": ["scrot", "ffmpeg"]},
-                "ocr_backend": {"type": "string", "enum": ["auto", "rapidocr", "off"]},
-                "ocr_python": {"type": "string"},
-                "ocr_min_score": {"type": "number"},
-                "skip_install": {"type": "boolean"},
-                "keep_installed": {"type": "boolean"},
-                "dbus_session": {"type": "boolean"},
-                "window_timeout": {"type": "number"},
-                "settle_time": {"type": "number"},
-                "validate_screenshots": {"type": "boolean"},
-                "min_screenshots": {"type": "integer"},
-                "max_screenshots": {"type": "integer"},
-                "min_screenshot_width": {"type": "integer"},
-                "min_screenshot_height": {"type": "integer"},
-                "min_screenshot_bytes": {"type": "integer"},
-                "min_screenshot_stddev": {"type": "number"},
-                "min_screenshot_gray_levels": {"type": "integer"},
-            },
-            "required": ["packages"],
-        },
+        description=(
+            "在后台运行应用并生成截图和报告。默认会在本机安装应用，在虚拟显示器中截图。"
+            "返回 job_id，用 get_job_status 查询进度、截图路径和报告。"
+        ),
+        input_schema=_CAPTURE_SCHEMA,
         handler=_tool_start_capture_packages,
     ),
     "auto_upload_packages": MCPTool(
         name="auto_upload_packages",
-        description="先自动截图，再把截图和包一起更新到应用商店。只适用于已有应用更新，不适用于新应用首提。同步模式适合短时调试；真实长链路建议改用 start_auto_upload_packages 异步启动后再用 get_job_status 轮询。若未显式提供 steps，截图阶段会先截首屏，再把整张界面的 OCR 文本块和坐标交给 AI 逐轮决定下一步点击，每拍完一张都会重新识别当前界面后再继续，不依赖写死页面标签。显式 steps 仍可使用 click-text:<界面文字> 触发 OCR 点击。自动规划模式下不要关闭 OCR 或截图校验。若 env 里配置 APPSTORE_SUDO_PASSWORD 则安装/卸载走 sudo -S，否则默认 sudo 命令会改走 pkexec。",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "username": {"type": "string"},
-                "password": {"type": "string"},
-                "capabilities_cache": {"type": "string"},
-                "output_dir": {"type": "string"},
-                "mode": {"type": "string", "enum": ["auto", "api", "browser"]},
-                "session_cache_dir": {"type": "string"},
-                "artifact_dir": {"type": "string"},
-                "headless": {"type": "boolean", "enum": [False], "deprecated": True},
-                "app_id": {"type": "string"},
-                "note": {"type": "string"},
-                "release_key": {"type": "string"},
-                "pkg_channel": {"type": "string"},
-                "region": {"type": "string"},
-                "icon_path": {"type": "string"},
-                "capture_package": {"type": "string"},
-                "min_screenshots": {"type": "integer"},
-                "max_screenshots": {"type": "integer"},
-                "steps": {"type": "array", "items": {"type": "string"}},
-                "ai_prompt": {"type": "string"},
-                "ai_base_url": {"type": "string"},
-                "ai_model": {"type": "string"},
-                "ai_api_key": {"type": "string"},
-                "launch_command": {"type": "string"},
-                "desktop_file": {"type": "string"},
-                "window_name": {"type": "string"},
-                "window_class": {"type": "string"},
-                "install_command": {"type": "string"},
-                "uninstall_command": {"type": "string"},
-                "sudo_password": {"type": "string", "description": "可选 sudo 密码。不传则读取 APPSTORE_SUDO_PASSWORD；若仍为空，默认 sudo 安装/卸载命令会改走 pkexec。"},
-                "screen_size": {"type": "string"},
-                "scale_filter": {"type": "string"},
-                "capture_tool": {"type": "string", "enum": ["scrot", "ffmpeg"]},
-                "ocr_backend": {"type": "string", "enum": ["auto", "rapidocr", "off"]},
-                "ocr_python": {"type": "string"},
-                "ocr_min_score": {"type": "number"},
-                "skip_install": {"type": "boolean"},
-                "keep_installed": {"type": "boolean"},
-                "dbus_session": {"type": "boolean"},
-                "window_timeout": {"type": "number"},
-                "settle_time": {"type": "number"},
-                "validate_screenshots": {"type": "boolean"},
-                "min_screenshot_width": {"type": "integer"},
-                "min_screenshot_height": {"type": "integer"},
-                "min_screenshot_bytes": {"type": "integer"},
-                "min_screenshot_stddev": {"type": "number"},
-                "min_screenshot_gray_levels": {"type": "integer"},
-            },
-            "required": ["packages"],
-        },
+        description=(
+            "旧版一键更新的同步入口。选一个包截图，达到 3 至 6 张截图要求后，按包名或 app_id 匹配已有应用并提交更新。"
+            "需要商店账号密码。长任务用 start_auto_upload_packages。"
+        ),
+        input_schema=_AUTO_UPLOAD_SCHEMA,
         handler=_tool_auto_upload_packages,
     ),
     "start_auto_upload_packages": MCPTool(
         name="start_auto_upload_packages",
-        description="异步启动自动截图并上传的长链路任务。会立刻返回 job_id，之后用 get_job_status 轮询，避免真实截图和上传流程超过 180 秒。",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "packages": {"type": "array", "items": {"type": "string"}},
-                "username": {"type": "string"},
-                "password": {"type": "string"},
-                "capabilities_cache": {"type": "string"},
-                "output_dir": {"type": "string"},
-                "mode": {"type": "string", "enum": ["auto", "api", "browser"]},
-                "session_cache_dir": {"type": "string"},
-                "artifact_dir": {"type": "string"},
-                "headless": {"type": "boolean", "enum": [False], "deprecated": True},
-                "app_id": {"type": "string"},
-                "note": {"type": "string"},
-                "release_key": {"type": "string"},
-                "pkg_channel": {"type": "string"},
-                "region": {"type": "string"},
-                "icon_path": {"type": "string"},
-                "capture_package": {"type": "string"},
-                "min_screenshots": {"type": "integer"},
-                "max_screenshots": {"type": "integer"},
-                "steps": {"type": "array", "items": {"type": "string"}},
-                "ai_prompt": {"type": "string"},
-                "ai_base_url": {"type": "string"},
-                "ai_model": {"type": "string"},
-                "ai_api_key": {"type": "string"},
-                "launch_command": {"type": "string"},
-                "desktop_file": {"type": "string"},
-                "window_name": {"type": "string"},
-                "window_class": {"type": "string"},
-                "install_command": {"type": "string"},
-                "uninstall_command": {"type": "string"},
-                "sudo_password": {"type": "string", "description": "可选 sudo 密码。不传则读取 APPSTORE_SUDO_PASSWORD；若仍为空，默认 sudo 安装/卸载命令会改走 pkexec。"},
-                "screen_size": {"type": "string"},
-                "scale_filter": {"type": "string"},
-                "capture_tool": {"type": "string", "enum": ["scrot", "ffmpeg"]},
-                "ocr_backend": {"type": "string", "enum": ["auto", "rapidocr", "off"]},
-                "ocr_python": {"type": "string"},
-                "ocr_min_score": {"type": "number"},
-                "skip_install": {"type": "boolean"},
-                "keep_installed": {"type": "boolean"},
-                "dbus_session": {"type": "boolean"},
-                "window_timeout": {"type": "number"},
-                "settle_time": {"type": "number"},
-                "validate_screenshots": {"type": "boolean"},
-                "min_screenshot_width": {"type": "integer"},
-                "min_screenshot_height": {"type": "integer"},
-                "min_screenshot_bytes": {"type": "integer"},
-                "min_screenshot_stddev": {"type": "number"},
-                "min_screenshot_gray_levels": {"type": "integer"},
-            },
-            "required": ["packages"],
-        },
+        description=(
+            "旧版一键更新的后台入口。选一个本机可运行的包截图，达到 3 至 6 张截图要求后，"
+            "按包名或 app_id 匹配已有应用，把安装包和截图一起提审。"
+            "需要商店账号密码。返回 job_id 后用 get_job_status 查看结果。"
+            "按 detail_id 更新指定版本或保存原草稿用 prepare_app_update 和 submit_app_update。"
+        ),
+        input_schema=_AUTO_UPLOAD_SCHEMA,
         handler=_tool_start_auto_upload_packages,
     ),
     "get_job_status": MCPTool(
         name="get_job_status",
-        description="读取 start_capture_packages 或 start_auto_upload_packages 启动的后台作业状态。如果任务已完成，会返回 report、capture_details 和执行摘要。",
+        description=(
+            "查询 start_capture_packages 或 start_auto_upload_packages 返回的 job_id。"
+            "根据 status 判断任务是 queued、running、completed 还是 failed。返回可用的报告、截图路径和错误信息。"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -2033,12 +1933,18 @@ def _error_response(request_id: Any, error: MCPError) -> dict[str, Any]:
 
 
 class _Protocol:
-    def __init__(self, get_tools: Callable[[], dict[str, MCPTool]]) -> None:
+    def __init__(
+        self, get_tools: Callable[[], dict[str, MCPTool]], *, legacy_versions: tuple[str, ...] = _LEGACY_PROTOCOL_VERSIONS,
+    ) -> None:
         self.get_tools = get_tools
-        self.legacy_version = _LEGACY_PROTOCOL_VERSIONS[0]
+        self.legacy_versions = legacy_versions
+        self.legacy_version = legacy_versions[0]
+        self.supported_versions = (_MODERN_PROTOCOL_VERSION, *legacy_versions)
 
     def handle_frame(self, frame: bytes) -> dict[str, Any] | list[dict[str, Any]] | None:
-        payload = _decode_message(frame)
+        return self.handle_message(_decode_message(frame))
+
+    def handle_message(self, payload: Any) -> dict[str, Any] | list[dict[str, Any]] | None:
         if isinstance(payload, list):
             if self.legacy_version >= "2025-06-18" or not payload:
                 raise MCPError("JSON-RPC batch is invalid for this MCP version", code=-32600)
@@ -2083,7 +1989,7 @@ class _Protocol:
                 raise MCPError("modern MCP requests require protocolVersion and clientCapabilities in params._meta", code=-32602)
             if requested != _MODERN_PROTOCOL_VERSION:
                 raise MCPError("Unsupported protocol version", code=-32022, data={
-                    "supported": list(_SUPPORTED_PROTOCOL_VERSIONS), "requested": requested,
+                    "supported": list(self.supported_versions), "requested": requested,
                 })
             result = self.handle_modern(method, params)
             if method in {"server/discover", "tools/list"}:
@@ -2095,7 +2001,7 @@ class _Protocol:
         if method == "initialize":
             self.get_tools()
             requested = _ensure_string(params.get("protocolVersion"), field_name="protocolVersion")
-            self.legacy_version = requested if requested in _LEGACY_PROTOCOL_VERSIONS else _LEGACY_PROTOCOL_VERSIONS[0]
+            self.legacy_version = requested if requested in self.legacy_versions else self.legacy_versions[0]
             result = {"protocolVersion": self.legacy_version, "capabilities": {"tools": {}}, "serverInfo": _SERVER_INFO}
         elif method == "ping":
             result = {}
@@ -2106,7 +2012,9 @@ class _Protocol:
     def handle_modern(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "server/discover":
             self.get_tools()
-            return {"supportedVersions": list(_SUPPORTED_PROTOCOL_VERSIONS), "capabilities": {"tools": {}}}
+            return {"supportedVersions": list(self.supported_versions), "capabilities": {"tools": {}}}
+        if method == "ping":
+            return {}
         return self.handle_tools(method, params, _MODERN_PROTOCOL_VERSION)
 
     def handle_tools(self, method: str, params: dict[str, Any], protocol_version: str) -> dict[str, Any]:
@@ -2199,11 +2107,111 @@ def serve(*, get_tools: Callable[[], dict[str, MCPTool]] | None = None) -> int:
     return 0
 
 
-def serve_from_preferences() -> int:
+def _validate_http_metadata(headers: HTTPMessage, method: Any, version: Any, params: dict[str, Any]) -> None:
+    expected = {"MCP-Protocol-Version": version, "Mcp-Method": method}
+    if method in ("tools/call", "prompts/get"):
+        expected["Mcp-Name"] = params.get("name")
+    elif method == "resources/read":
+        expected["Mcp-Name"] = params.get("uri")
+    for name, value in expected.items():
+        values = headers.get_all(name, [])
+        actual = values[0] if len(values) == 1 else None
+        if name == "Mcp-Name" and actual and actual.startswith("=?base64?") and actual.endswith("?="):
+            try:
+                actual = base64.b64decode(actual[9:-2], validate=True).decode("utf-8")
+            except ValueError:
+                actual = None
+        if not isinstance(value, str) or not value or actual != value:
+            raise MCPError(f"Missing or mismatched {name} header", code=-32020)
+
+
+def _dispatch_http(
+    body: bytes, headers: HTTPMessage, get_tools: Callable[[], dict[str, MCPTool]],
+) -> tuple[HTTPStatus, dict | list | None]:
+    protocol = _Protocol(get_tools, legacy_versions=_HTTP_LEGACY_VERSIONS)
+    request_id = None
+    try:
+        payload = _decode_message(body)
+        request = payload if isinstance(payload, dict) else {}
+        if type(request.get("id")) in (int, str):
+            request_id = request["id"]
+        params = request.get("params")
+        params = params if isinstance(params, dict) else {}
+        meta = params.get("_meta")
+        meta = meta if isinstance(meta, dict) else {}
+        method = request.get("method")
+        version = headers.get("MCP-Protocol-Version", "")
+        modern = method == "server/discover" or _VERSION_META in meta or version >= _MODERN_PROTOCOL_VERSION
+        if modern:
+            _validate_http_metadata(headers, method, meta.get(_VERSION_META), params)
+        elif version and version not in _HTTP_LEGACY_VERSIONS:
+            raise MCPError("Unsupported protocol version", code=-32022, data={
+                "supported": list(protocol.supported_versions), "requested": version,
+            })
+        else:
+            protocol.legacy_version = version or _HTTP_LEGACY_VERSIONS[-1]
+        response = protocol.handle_message(payload)
+    except MCPError as exc:
+        return HTTPStatus.BAD_REQUEST, _error_response(request_id, exc)
+    if response is None:
+        return HTTPStatus.ACCEPTED, None
+    if isinstance(response, dict):
+        code = response.get("error", {}).get("code")
+        if code in {-32700, -32600, -32022}:
+            return HTTPStatus.BAD_REQUEST, response
+        if modern and code == -32601:
+            return HTTPStatus.NOT_FOUND, response
+    return HTTPStatus.OK, response
+
+
+def _serve_transport(
+    argv: list[str] | None,
+    *,
+    get_tools: Callable[[], dict[str, MCPTool]],
+    network_settings: dict[str, tuple[int, str]] | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(description="Application publisher MCP server")
+    parser.add_argument("--transport", choices=("stdio", "http", "sse"), default="stdio")
+    parser.add_argument("--port", type=int, help="local HTTP or SSE port")
+    args = parser.parse_args(argv)
+    if args.transport == "stdio":
+        return serve(get_tools=get_tools)
+    default_port = DEFAULT_MCP_SSE_PORT if args.transport == "sse" else DEFAULT_MCP_HTTP_PORT
+    default_port, token = (network_settings or {}).get(args.transport, (default_port, ""))
+    port = default_port if args.port is None else args.port
+    if not 0 <= port <= 65535:
+        parser.error("--port must be between 0 and 65535")
+
+    def make_dispatch():
+        if args.transport == "http":
+            return lambda body, headers: _dispatch_http(body, headers, get_tools)
+
+        protocol = _Protocol(get_tools)
+
+        def dispatch(body: bytes, _headers: HTTPMessage) -> tuple[HTTPStatus, dict | list | None]:
+            try:
+                return HTTPStatus.OK, protocol.handle_frame(body)
+            except MCPError as exc:
+                return HTTPStatus.BAD_REQUEST, _error_response(None, exc)
+
+        return dispatch
+
+    _configure_logging()
+    try:
+        get_tools()
+        token = token or os.environ.get(f"APPSTORE_MCP_{args.transport.upper()}_TOKEN", "").strip()
+        return serve_network(args.transport, port, token, make_dispatch)
+    except (MCPError, OSError, ValueError) as exc:
+        print(f"MCP {args.transport.upper()}: {exc}", file=sys.stderr)
+        return 1
+
+
+def serve_from_preferences(argv: list[str] | None = None) -> int:
     from ui.preferences import PreferenceStore
 
     store = PreferenceStore()
-    output_dir = store.load().mcp_output_dir
+    settings = store.load()
+    output_dir = settings.mcp_output_dir
     os.environ["APPSTORE_MCP_OUTPUT_ROOT"] = output_dir or os.environ.get("APPSTORE_MCP_OUTPUT_ROOT") or str(DEFAULT_OUTPUT_ROOT)
 
     def get_tools() -> dict[str, MCPTool]:
@@ -2214,12 +2222,14 @@ def serve_from_preferences() -> int:
             return TOOLS
         return {name: tool for name, tool in TOOLS.items() if name not in _ACTION_TOOLS}
 
-    return serve(get_tools=get_tools)
+    return _serve_transport(argv or [], get_tools=get_tools, network_settings={
+        "http": (settings.mcp_http_port, settings.mcp_http_token),
+        "sse": (settings.mcp_sse_port, settings.mcp_sse_token),
+    })
 
 
 def main(argv: list[str] | None = None) -> int:
-    _ = argv
-    return serve()
+    return _serve_transport(argv, get_tools=lambda: TOOLS)
 
 
 if __name__ == "__main__":

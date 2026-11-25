@@ -1,3 +1,10 @@
+com.uniontech.utpublisher (0.1.10) unstable; urgency=medium
+
+  * Add separately configured local Streamable HTTP and SSE MCP listeners.
+  * Clarify MCP tool routes for screenshot jobs, draft updates, and first submissions.
+
+ -- UnionTech App Store Tooling <maintainers@example.invalid>  Wed, 25 Nov 2026 17:22:29 +0800
+
 com.uniontech.utpublisher (0.1.9) unstable; urgency=medium
 
   * Open preferences beside the sidebar and clarify MCP client setup.

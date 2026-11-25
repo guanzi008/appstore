@@ -26,6 +26,7 @@ class MainWindow final : public Dtk::Widget::DMainWindow
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -42,6 +43,7 @@ private:
     void handleBridgeFailed(const QString &command, const QString &message, const QString &traceback);
 
     void applySessionData(const QJsonObject &data);
+    void applyPreferences(const QJsonObject &preferences);
     void setCurrentGroup(const QJsonObject &group);
     void clearCurrentWorkspace(bool clearOnlineSelection, const QString &statusText = {});
     void persistCurrentGroupFromUi();
@@ -87,6 +89,8 @@ private:
     static QString commandLabel(const QString &command);
 
     BridgeClient *m_bridge = nullptr;
+    QProcess m_mcpHttpProcess;
+    QProcess m_mcpSseProcess;
     SidebarWidget *m_sidebar = nullptr;
     MetadataPanel *m_metadataPanel = nullptr;
     ScreenshotPanel *m_screenshotPanel = nullptr;

@@ -1301,6 +1301,12 @@ def _preferences_to_json(preferences: UIPreferences) -> dict:
         "mcp_enabled": preferences.mcp_enabled,
         "mcp_allow_actions": preferences.mcp_allow_actions,
         "mcp_output_dir": preferences.mcp_output_dir,
+        "mcp_http_enabled": preferences.mcp_http_enabled,
+        "mcp_http_port": preferences.mcp_http_port,
+        "mcp_http_token": preferences.mcp_http_token,
+        "mcp_sse_enabled": preferences.mcp_sse_enabled,
+        "mcp_sse_port": preferences.mcp_sse_port,
+        "mcp_sse_token": preferences.mcp_sse_token,
         "default_target_system_lines": {
             str(key): list(values)
             for key, values in preferences.default_target_system_lines.items()
@@ -1923,6 +1929,14 @@ def command_save_preferences(payload: dict) -> dict:
         raise ValueError("preferences must be an object")
     preference_store = PreferenceStore()
     preferences_payload = {**_preferences_to_json(preference_store.load()), **preferences_payload}
+    mcp_http_enabled = _coerce_bool(preferences_payload["mcp_http_enabled"])
+    mcp_sse_enabled = _coerce_bool(preferences_payload["mcp_sse_enabled"])
+    mcp_http_port = preferences_payload["mcp_http_port"]
+    mcp_sse_port = preferences_payload["mcp_sse_port"]
+    if any(type(port) is not int or not 1 <= port <= 65535 for port in (mcp_http_port, mcp_sse_port)):
+        raise ValueError("MCP 端口必须在 1 到 65535 之间。")
+    if mcp_http_enabled and mcp_sse_enabled and mcp_http_port == mcp_sse_port:
+        raise ValueError("HTTP 和 SSE 需要不同端口。")
     preferences = UIPreferences(
         recent_category_ids=tuple(
             str(value).strip()
@@ -1949,6 +1963,12 @@ def command_save_preferences(payload: dict) -> dict:
         mcp_enabled=_coerce_bool(preferences_payload["mcp_enabled"]),
         mcp_allow_actions=_coerce_bool(preferences_payload["mcp_allow_actions"]),
         mcp_output_dir=str(preferences_payload["mcp_output_dir"] or "").strip(),
+        mcp_http_enabled=mcp_http_enabled,
+        mcp_http_port=mcp_http_port,
+        mcp_http_token=str(preferences_payload["mcp_http_token"] or "").strip(),
+        mcp_sse_enabled=mcp_sse_enabled,
+        mcp_sse_port=mcp_sse_port,
+        mcp_sse_token=str(preferences_payload["mcp_sse_token"] or "").strip(),
     )
     path = preference_store.save(preferences)
     return {
@@ -2220,7 +2240,7 @@ def main() -> int:
     if command == "mcp":
         from appstore.mcp_server import serve_from_preferences
 
-        return serve_from_preferences()
+        return serve_from_preferences(sys.argv[2:])
     if command == "mcp_job":
         from appstore.mcp_job_runner import main as run_mcp_job
 

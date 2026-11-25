@@ -40,7 +40,9 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -54,6 +56,39 @@
 #include <vector>
 
 namespace {
+
+struct McpListener {
+    QString transport;
+    QString label;
+    int defaultPort;
+    QString path;
+
+    QString preference(const QString &field) const
+    {
+        return QStringLiteral("mcp_%1_%2").arg(transport, field);
+    }
+
+    QString url(int port) const
+    {
+        return QStringLiteral("http://127.0.0.1:%1%2").arg(port).arg(path);
+    }
+};
+
+const McpListener HttpListener{QStringLiteral("http"), QStringLiteral("Streamable HTTP"), 18765, QStringLiteral("/mcp")};
+const McpListener SseListener{QStringLiteral("sse"), QStringLiteral("SSE"), 18766, QStringLiteral("/sse")};
+
+void stopMcpListener(QProcess &process)
+{
+    if (process.state() == QProcess::NotRunning) {
+        return;
+    }
+    const QSignalBlocker blocker(&process);
+    process.terminate();
+    if (!process.waitForFinished(1000)) {
+        process.kill();
+        process.waitForFinished(1000);
+    }
+}
 
 QStringList packagePathsInDirectory(const QString &directoryPath)
 {
@@ -437,7 +472,32 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_bridge, &BridgeClient::commandFinished, this, &MainWindow::handleBridgeFinished);
     connect(m_bridge, &BridgeClient::commandFailed, this, &MainWindow::handleBridgeFailed);
 
+    const auto monitorMcpListener = [this](QProcess *process, const QString &label) {
+        process->setStandardOutputFile(QProcess::nullDevice());
+        connect(process, &QProcess::errorOccurred, this, [this, label](QProcess::ProcessError error) {
+            if (error == QProcess::FailedToStart) {
+                sendMessage(style()->standardIcon(QStyle::SP_MessageBoxWarning), QStringLiteral("无法启动 MCP %1 服务。").arg(label));
+            }
+        });
+        connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+                [this, process, label](int exitCode, QProcess::ExitStatus exitStatus) {
+            const QString error = QString::fromUtf8(process->readAllStandardError()).trimmed();
+            if (exitCode != 0 || exitStatus != QProcess::NormalExit) {
+                sendMessage(style()->standardIcon(QStyle::SP_MessageBoxWarning),
+                            QStringLiteral("MCP %1 服务已退出。%2").arg(label, error.left(500)));
+            }
+        });
+    };
+    monitorMcpListener(&m_mcpHttpProcess, HttpListener.label);
+    monitorMcpListener(&m_mcpSseProcess, SseListener.label);
+
     bootstrap();
+}
+
+MainWindow::~MainWindow()
+{
+    stopMcpListener(m_mcpHttpProcess);
+    stopMcpListener(m_mcpSseProcess);
 }
 
 void MainWindow::buildUi()
@@ -697,10 +757,7 @@ void MainWindow::handleBridgeFinished(const QString &command, const QJsonObject 
     }
 
     if (command == QStringLiteral("save_preferences")) {
-        const QJsonObject preferences = data.value(QStringLiteral("preferences")).toObject();
-        if (!preferences.isEmpty()) {
-            m_preferences = preferences;
-        }
+        applyPreferences(data.value(QStringLiteral("preferences")).toObject());
         m_workflowBar->setStatusText(QStringLiteral("偏好设置已保存。"));
         return;
     }
@@ -913,10 +970,7 @@ void MainWindow::handleBridgeFailed(const QString &command, const QString &messa
 
 void MainWindow::applySessionData(const QJsonObject &data)
 {
-    const QJsonObject preferences = data.value(QStringLiteral("preferences")).toObject();
-    if (!preferences.isEmpty()) {
-        m_preferences = preferences;
-    }
+    applyPreferences(data.value(QStringLiteral("preferences")).toObject());
 
     const QJsonObject login = data.value(QStringLiteral("login")).toObject();
     const bool loggedIn = login.value(QStringLiteral("logged_in")).toBool(false);
@@ -1546,6 +1600,56 @@ void MainWindow::openPreferences()
     runBridgeCommand(QStringLiteral("save_preferences"), payload, 120000);
 }
 
+void MainWindow::applyPreferences(const QJsonObject &preferences)
+{
+    if (preferences.isEmpty()) {
+        return;
+    }
+    const auto needsRestart = [this, &preferences](const McpListener &listener, const QProcess &process) {
+        if (process.state() == QProcess::NotRunning) {
+            return true;
+        }
+        for (const QString &key : {QStringLiteral("mcp_enabled"), QStringLiteral("mcp_output_dir"),
+                                  listener.preference(QStringLiteral("enabled")), listener.preference(QStringLiteral("port")),
+                                  listener.preference(QStringLiteral("token"))}) {
+            if (m_preferences.value(key) != preferences.value(key)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool restartHttp = needsRestart(HttpListener, m_mcpHttpProcess);
+    const bool restartSse = needsRestart(SseListener, m_mcpSseProcess);
+    if (restartHttp) {
+        stopMcpListener(m_mcpHttpProcess);
+    }
+    if (restartSse) {
+        stopMcpListener(m_mcpSseProcess);
+    }
+    m_preferences = preferences;
+    const auto startListener = [&preferences](const McpListener &listener, QProcess &process) {
+        if (!preferences.value(QStringLiteral("mcp_enabled")).toBool()
+            || !preferences.value(listener.preference(QStringLiteral("enabled"))).toBool()) {
+            return;
+        }
+        BridgeClient::configureProcess(&process, QStringLiteral(APPSTORE_REPO_ROOT), QStringLiteral("mcp"));
+        QStringList arguments = process.arguments();
+        if (arguments.isEmpty()) {
+            arguments.append(QStringLiteral("mcp"));
+        }
+        const int port = preferences.value(listener.preference(QStringLiteral("port"))).toInt(listener.defaultPort);
+        arguments.append({QStringLiteral("--transport"), listener.transport, QStringLiteral("--port"), QString::number(port)});
+        process.setArguments(arguments);
+        process.start();
+    };
+    if (restartHttp) {
+        startListener(HttpListener, m_mcpHttpProcess);
+    }
+    if (restartSse) {
+        startListener(SseListener, m_mcpSseProcess);
+    }
+}
+
 void MainWindow::openMcpPreferences()
 {
     if (m_bridge->isBusy()) {
@@ -1602,45 +1706,125 @@ void MainWindow::openMcpPreferences()
     auto *clientRow = new QHBoxLayout();
     auto *clientLabel = new QLabel(QStringLiteral("添加到 MCP 客户端"), clientSetup);
     clientLabel->setObjectName(QStringLiteral("CardTitle"));
+    auto *transport = new QComboBox(clientSetup);
+    transport->addItem(QStringLiteral("stdio"), QStringLiteral("stdio"));
+    transport->addItem(HttpListener.label, HttpListener.transport);
+    transport->addItem(SseListener.label, SseListener.transport);
     auto *copyConfig = new QPushButton(QStringLiteral("复制客户端配置"), clientSetup);
     copyConfig->setAutoDefault(false);
     clientRow->addWidget(clientLabel, 1);
+    clientRow->addWidget(transport);
     clientRow->addWidget(copyConfig);
     clientLayout->addLayout(clientRow);
-    auto *hint = new QLabel(QStringLiteral(
-        "勾选「启用 MCP 服务」，复制配置并保存，然后在客户端的 MCP 设置导入 JSON。\n"
-        "表单方式请选择 stdio，并按 JSON 里的 command、args 和 env 填写。"), clientSetup);
+
+    struct ListenerControls {
+        QCheckBox *enabled;
+        QSpinBox *port;
+        QString token;
+    };
+    const auto addListener = [&](const McpListener &listener) {
+        auto *row = new QHBoxLayout();
+        auto *listen = new QCheckBox(listener.label, clientSetup);
+        listen->setChecked(m_preferences.value(listener.preference(QStringLiteral("enabled"))).toBool());
+        listen->setEnabled(enabled->isChecked());
+        auto *port = new QSpinBox(clientSetup);
+        port->setRange(1, 65535);
+        port->setAccessibleName(QStringLiteral("%1 本机端口").arg(listener.label));
+        port->setValue(m_preferences.value(listener.preference(QStringLiteral("port"))).toInt(listener.defaultPort));
+        auto *address = new QLabel(listener.url(port->value()), clientSetup);
+        address->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        const auto refreshPort = [port, enabled, listen]() {
+            port->setEnabled(enabled->isChecked() && listen->isChecked());
+        };
+        connect(enabled, &QCheckBox::toggled, listen, &QCheckBox::setEnabled);
+        connect(enabled, &QCheckBox::toggled, &dialog, refreshPort);
+        connect(listen, &QCheckBox::toggled, &dialog, [transport, listener, refreshPort](bool active) {
+            refreshPort();
+            if (active) {
+                transport->setCurrentIndex(transport->findData(listener.transport));
+            }
+        });
+        connect(port, qOverload<int>(&QSpinBox::valueChanged), &dialog, [address, listener, copyConfig](int value) {
+            address->setText(listener.url(value));
+            copyConfig->setText(QStringLiteral("复制客户端配置"));
+        });
+        refreshPort();
+        row->addWidget(listen);
+        row->addWidget(port);
+        row->addWidget(address, 1);
+        clientLayout->addLayout(row);
+        const QString saved = m_preferences.value(listener.preference(QStringLiteral("token"))).toString();
+        return ListenerControls{listen, port, saved.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : saved};
+    };
+    const ListenerControls http = addListener(HttpListener);
+    const ListenerControls sse = addListener(SseListener);
+    if (http.enabled->isChecked()) {
+        transport->setCurrentIndex(transport->findData(HttpListener.transport));
+    } else if (sse.enabled->isChecked()) {
+        transport->setCurrentIndex(transport->findData(SseListener.transport));
+    }
+
+    auto *hint = new QLabel(clientSetup);
     hint->setObjectName(QStringLiteral("MutedText"));
     hint->setWordWrap(true);
     clientLayout->addWidget(hint);
     layout->addWidget(clientSetup);
+    const auto refreshConnection = [transport, hint, copyConfig]() {
+        const auto selected = transport->currentData().toString();
+        hint->setText(selected == QStringLiteral("stdio") ? QStringLiteral(
+            "客户端请选择 stdio，按配置填写 command、args 和 env。")
+            : QStringLiteral("勾选对应服务并保存。应用运行时，客户端选择 %1，填写 url 和 Authorization 请求头。")
+                .arg(selected == SseListener.transport ? SseListener.label : QStringLiteral("HTTP")));
+        copyConfig->setText(QStringLiteral("复制客户端配置"));
+    };
+    connect(transport, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, refreshConnection);
+    refreshConnection();
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
-    connect(copyConfig, &QPushButton::clicked, &dialog, [&mcpProcess, &processEnv, copyConfig]() {
-        QJsonObject environment;
-        for (const QString &key : {QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"),
-                                  QStringLiteral("UTPUBLISHER_CAPABILITY_CACHE_DIR"),
-                                  QStringLiteral("UTPUBLISHER_SESSION_CACHE_DIR"),
-                                  QStringLiteral("UTPUBLISHER_OUTPUT_ROOT"),
-                                  QStringLiteral("PYTHONPATH"), QStringLiteral("PYTHONHOME")}) {
-            if (processEnv.contains(key)) {
-                environment.insert(key, processEnv.value(key));
+    connect(copyConfig, &QPushButton::clicked, &dialog, [&mcpProcess, &processEnv, copyConfig, transport, http, sse]() {
+        const auto selected = transport->currentData().toString();
+        QJsonObject server;
+        if (selected != QStringLiteral("stdio")) {
+            const bool useSse = selected == SseListener.transport;
+            const auto &listener = useSse ? SseListener : HttpListener;
+            const auto &controls = useSse ? sse : http;
+            server = {
+                {QStringLiteral("type"), listener.transport},
+                {QStringLiteral("url"), listener.url(controls.port->value())},
+                {QStringLiteral("headers"), QJsonObject{{QStringLiteral("Authorization"), QStringLiteral("Bearer ") + controls.token}}},
+            };
+        } else {
+            QJsonObject environment;
+            for (const QString &key : {QStringLiteral("UTPUBLISHER_PREFERENCES_PATH"),
+                                      QStringLiteral("UTPUBLISHER_CAPABILITY_CACHE_DIR"),
+                                      QStringLiteral("UTPUBLISHER_SESSION_CACHE_DIR"),
+                                      QStringLiteral("UTPUBLISHER_OUTPUT_ROOT"),
+                                      QStringLiteral("PYTHONPATH"), QStringLiteral("PYTHONHOME")}) {
+                if (processEnv.contains(key)) {
+                    environment.insert(key, processEnv.value(key));
+                }
             }
+            const QString program = mcpProcess.program();
+            const QString resolvedProgram = QStandardPaths::findExecutable(program);
+            server = {
+                {QStringLiteral("command"), resolvedProgram.isEmpty() ? program : resolvedProgram},
+                {QStringLiteral("args"), QJsonArray::fromStringList(mcpProcess.arguments())},
+                {QStringLiteral("env"), environment},
+            };
         }
-        const QString program = mcpProcess.program();
-        const QString resolvedProgram = QStandardPaths::findExecutable(program);
-        const QJsonObject server{
-            {QStringLiteral("command"), resolvedProgram.isEmpty() ? program : resolvedProgram},
-            {QStringLiteral("args"), QJsonArray::fromStringList(mcpProcess.arguments())},
-            {QStringLiteral("env"), environment},
-        };
         const QJsonObject config{{QStringLiteral("mcpServers"), QJsonObject{{QStringLiteral("appstore-uploader"), server}}}};
         QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Indented)));
         copyConfig->setText(QStringLiteral("配置已复制"));
     });
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, http, sse]() {
+        if (http.enabled->isChecked() && sse.enabled->isChecked() && http.port->value() == sse.port->value()) {
+            QMessageBox::information(&dialog, QStringLiteral("端口重复"), QStringLiteral("HTTP 和 SSE 需要不同端口。"));
+            return;
+        }
+        dialog.accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     layout->addWidget(buttons);
     if (dialog.exec() != QDialog::Accepted) {
@@ -1651,6 +1835,12 @@ void MainWindow::openMcpPreferences()
         {QStringLiteral("mcp_enabled"), enabled->isChecked()},
         {QStringLiteral("mcp_allow_actions"), allowActions->isChecked()},
         {QStringLiteral("mcp_output_dir"), outputPath->text().trimmed()},
+        {QStringLiteral("mcp_http_enabled"), http.enabled->isChecked()},
+        {QStringLiteral("mcp_http_port"), http.port->value()},
+        {QStringLiteral("mcp_http_token"), http.token},
+        {QStringLiteral("mcp_sse_enabled"), sse.enabled->isChecked()},
+        {QStringLiteral("mcp_sse_port"), sse.port->value()},
+        {QStringLiteral("mcp_sse_token"), sse.token},
     };
     runBridgeCommand(QStringLiteral("save_preferences"), QJsonObject{{QStringLiteral("preferences"), preferences}}, 120000);
 }

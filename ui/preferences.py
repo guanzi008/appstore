@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from appstore.mcp_http import DEFAULT_MCP_HTTP_PORT, DEFAULT_MCP_SSE_PORT
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +43,12 @@ class UIPreferences:
     mcp_enabled: bool = False
     mcp_allow_actions: bool = False
     mcp_output_dir: str = ""
+    mcp_http_enabled: bool = False
+    mcp_http_port: int = DEFAULT_MCP_HTTP_PORT
+    mcp_http_token: str = ""
+    mcp_sse_enabled: bool = False
+    mcp_sse_port: int = DEFAULT_MCP_SSE_PORT
+    mcp_sse_token: str = ""
 
     def target_ranges(self, package_family: str, arch: str) -> dict[str, DefaultTargetRange]:
         scope = f"{package_family}:{arch}"
@@ -78,6 +86,12 @@ class PreferenceStore:
             mcp_enabled=_normalize_bool(payload.get("mcp_enabled")),
             mcp_allow_actions=_normalize_bool(payload.get("mcp_allow_actions")),
             mcp_output_dir=str(payload.get("mcp_output_dir") or "").strip(),
+            mcp_http_enabled=_normalize_bool(payload.get("mcp_http_enabled")),
+            mcp_http_port=_normalize_port(payload.get("mcp_http_port"), DEFAULT_MCP_HTTP_PORT),
+            mcp_http_token=str(payload.get("mcp_http_token") or "").strip(),
+            mcp_sse_enabled=_normalize_bool(payload.get("mcp_sse_enabled")),
+            mcp_sse_port=_normalize_port(payload.get("mcp_sse_port"), DEFAULT_MCP_SSE_PORT),
+            mcp_sse_token=str(payload.get("mcp_sse_token") or "").strip(),
         )
 
     def save(self, preferences: UIPreferences) -> Path:
@@ -119,6 +133,10 @@ def _normalize_bool(raw) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_port(raw: object, default: int) -> int:
+    return raw if type(raw) is int and 1 <= raw <= 65535 else default
 
 
 def _normalize_system_line_defaults(raw) -> dict[str, tuple[str, ...]]:
